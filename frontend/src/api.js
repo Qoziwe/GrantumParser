@@ -25,10 +25,23 @@ function readCookie(name) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/**
+ * CSRF-токен храним в localStorage: при cross-origin развёртывании
+ * (фронт на qoziwe.github.io, API на другом домене) JS не может
+ * читать куки API-домена, поэтому токен доставляется в теле ответа
+ * /auth/login и хранится локально. Fallback — чтение куки (локальная
+ * разработка на одном домене).
+ */
+const CSRF_STORAGE_KEY = "gt_csrf_token";
+
+function getCsrfToken() {
+  return localStorage.getItem(CSRF_STORAGE_KEY) || readCookie("gt_csrf");
+}
+
 // Подставляем CSRF-токен во все небезопасные запросы.
 api.interceptors.request.use((config) => {
   if (!["get", "head", "options"].includes(config.method)) {
-    const token = readCookie("gt_csrf");
+    const token = getCsrfToken();
     if (token) config.headers["X-CSRF-Token"] = token;
   }
   return config;
@@ -51,6 +64,7 @@ api.interceptors.response.use(
     error.message = message;
 
     if (status === 401 && !`${error.config?.url || ""}`.includes("/auth/")) {
+      localStorage.removeItem(CSRF_STORAGE_KEY);
       window.dispatchEvent(new CustomEvent("gt:unauthorized"));
     }
 
@@ -58,16 +72,23 @@ api.interceptors.response.use(
   },
 );
 
-/** POST /auth/login — вход по паролю. Куки ставит сервер. */
+/** POST /auth/login — вход по паролю. Куки и CSRF-токен ставит сервер. */
 export async function login(password) {
   const { data } = await api.post("/auth/login", { password });
+  if (data?.csrf_token) {
+    localStorage.setItem(CSRF_STORAGE_KEY, data.csrf_token);
+  }
   return data;
 }
 
 /** POST /auth/logout — выход, сервер удаляет сессию. */
 export async function logout() {
-  const { data } = await api.post("/auth/logout");
-  return data;
+  try {
+    const { data } = await api.post("/auth/logout");
+    return data;
+  } finally {
+    localStorage.removeItem(CSRF_STORAGE_KEY);
+  }
 }
 
 /** POST /auth/password — смена пароля (инвалидирует все сессии). */

@@ -376,7 +376,10 @@ def auth_login():
         auth_mod.purge_expired_sessions(conn)
         token, csrf = auth_mod.create_session(conn)
 
-    resp = jsonify({"ok": True})
+    # CSRF-токен дублируем в теле ответа: фронтенд на другом домене
+    # (GitHub Pages) не может читать куки API-домена через document.cookie,
+    # поэтому единственный способ доставить токен в JS — тело ответа.
+    resp = jsonify({"ok": True, "csrf_token": csrf})
     _set_auth_cookies(resp, session_token=token, csrf_token=csrf)
     return resp
 
