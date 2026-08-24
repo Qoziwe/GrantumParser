@@ -302,7 +302,9 @@ def _auth_gate():
         return resp
 
     # CSRF для мутирующих запросов: cookie X-CSRF-Token должны совпасть.
-    if request.method not in _SAFE_METHODS:
+    # Исключение — logout: принудительный разлогин через CSRF безвреден,
+    # а неработающий выход при потере токена — реальная проблема.
+    if request.method not in _SAFE_METHODS and path != "/api/auth/logout":
         cookie_csrf = request.cookies.get(auth_mod.CSRF_COOKIE_NAME)
         header_csrf = request.headers.get("X-CSRF-Token")
         if not auth_mod.verify_csrf(cookie_csrf, header_csrf):
