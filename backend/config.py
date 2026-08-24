@@ -80,7 +80,11 @@ if SERVER_LOCATION not in {"home", "vps"}:
 
 CDP_URL = _get_str("CDP_URL", "http://localhost:9222", empty_as_default=True)
 TELEGRAM_BOT_TOKEN = _get_str("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = _get_str("TELEGRAM_CHAT_ID", "")
+# Список chat_id через запятую — уведомления получат все указанные чаты.
+TELEGRAM_CHAT_IDS = [
+    x.strip() for x in _get_str("TELEGRAM_CHAT_ID", "").split(",") if x.strip()
+]
+TELEGRAM_CHAT_ID = TELEGRAM_CHAT_IDS[0] if TELEGRAM_CHAT_IDS else ""
 PUBLIC_BROWSER_URL = _get_str("PUBLIC_BROWSER_URL", "")
 HUMAN_WAIT_SECONDS = _get_int("HUMAN_WAIT_SECONDS", 600)
 

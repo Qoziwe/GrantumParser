@@ -44,7 +44,7 @@ _domain_pending = {}
 def is_enabled() -> bool:
     return bool(
         config.TELEGRAM_BOT_TOKEN.strip()
-        and config.TELEGRAM_CHAT_ID.strip()
+        and config.TELEGRAM_CHAT_IDS
     )
 
 
@@ -106,17 +106,29 @@ def _send_text(text: str):
     """
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN.strip()}/sendMessage"
 
-    payload = {
-        "chat_id": config.TELEGRAM_CHAT_ID.strip(),
-        "text": text,
-    }
+    # Отправляем во все указанные чаты (TELEGRAM_CHAT_ID — через запятую).
+    # Если хоть одна доставка прошла — считаем отправку успешной.
+    errors = []
+    delivered = False
+    for chat_id in config.TELEGRAM_CHAT_IDS:
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            if response.ok:
+                delivered = True
+            else:
+                errors.append(
+                    f"chat {chat_id}: HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+        except Exception as exc:
+            errors.append(f"chat {chat_id}: {exc}")
 
-    response = requests.post(url, json=payload, timeout=15)
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Telegram HTTP {response.status_code}: {response.text[:300]}"
-        )
+    if not delivered:
+        raise RuntimeError("Telegram: " + "; ".join(errors)[:280])
 
 
 def notify_human_required(app, job_id, target_url, domain, block_reason):
