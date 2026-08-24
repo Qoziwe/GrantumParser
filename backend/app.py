@@ -281,6 +281,10 @@ def _auth_gate():
             resp.headers["Retry-After"] = str(e.retry_after)
             return resp
 
+    # OPTIONS запросы (CORS preflight) должны проходить без проверки сессии и токенов.
+    if request.method == "OPTIONS":
+        return None
+
     if path in _PUBLIC_PATHS:
         return None
 
