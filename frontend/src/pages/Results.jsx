@@ -89,11 +89,22 @@ function csvCell(value) {
 }
 
 function buildCsv(rows) {
-  const header = ["id", "job_id", "title", "url", "raw_text", "created_at"];
+  const header = [
+    "id", "job_id", "title", "url", "structuring_status",
+    "category", "organizer", "deadline", "funding_amount",
+    "location", "description", "tags", "raw_text", "created_at",
+  ];
   const lines = [header.map(csvCell).join(",")];
   for (const r of rows) {
+    const sd = r.structured_data || {};
     lines.push(
-      [r.id, r.job_id, r.title, r.url, r.raw_text, r.created_at]
+      [
+        r.id, r.job_id, sd.title || r.title, r.url, r.structuring_status || "skipped",
+        sd.category || "", sd.organizer || "", sd.deadline || "",
+        sd.funding_amount || "", sd.location || "",
+        sd.description || "", (sd.tags || []).join("; "),
+        r.raw_text, r.created_at,
+      ]
         .map(csvCell)
         .join(","),
     );
@@ -276,8 +287,16 @@ export default function Results() {
     const q = query.trim().toLowerCase();
     if (!q) return items;
     return items.filter((it) => {
-      const hay =
+      let hay =
         `${it.title || ""} ${it.url || ""} ${it.raw_text || ""}`.toLowerCase();
+      // Поиск по полям structured_data
+      if (it.structured_data) {
+        const sd = it.structured_data;
+        hay += ` ${sd.title || ""} ${sd.description || ""} ${sd.organizer || ""}`;
+        hay += ` ${sd.category || ""} ${sd.location || ""} ${sd.eligibility || ""}`;
+        hay += ` ${(sd.tags || []).join(" ")} ${(sd.industry || []).join(" ")}`;
+        hay = hay.toLowerCase();
+      }
       return hay.includes(q);
     });
   }, [items, query]);
@@ -532,6 +551,9 @@ export default function Results() {
               <span className="gr-th gr-th--main" role="columnheader">
                 Название · источник
               </span>
+              <span className="gr-th gr-th--status" role="columnheader">
+                AI
+              </span>
               <span className="gr-th gr-th--job" role="columnheader">
                 Задача
               </span>
@@ -550,6 +572,8 @@ export default function Results() {
                 const open = openIds.has(item.id);
                 const hue = hueFor(item.job_id);
                 const prev = previewOf(item.raw_text);
+                const sd = item.structured_data;
+                const sStatus = item.structuring_status || "skipped";
                 return (
                   <div
                     key={item.id}
@@ -572,13 +596,24 @@ export default function Results() {
 
                       <span className="gr-cell gr-cell--main" role="cell">
                         <span className="gr-item-title">
-                          {item.title || "Без названия"}
+                          {(sd && sd.title) || item.title || "Без названия"}
+                          {sd && sd.category && (
+                            <span className="gr-cat-badge">{sd.category}</span>
+                          )}
                         </span>
                         <span className="gr-item-sub">
                           <span className="gr-item-host">
                             {hostOf(item.url) || "—"}
                           </span>
-                          {prev && (
+                          {sd && sd.organizer && (
+                            <>
+                              <span className="gr-item-sep" aria-hidden="true">
+                                ·
+                              </span>
+                              <span className="gr-item-org">{sd.organizer}</span>
+                            </>
+                          )}
+                          {!sd && prev && (
                             <>
                               <span className="gr-item-sep" aria-hidden="true">
                                 ·
@@ -586,6 +621,22 @@ export default function Results() {
                               <span className="gr-item-prev">{prev}</span>
                             </>
                           )}
+                        </span>
+                      </span>
+
+                      <span className="gr-cell gr-cell--status" role="cell">
+                        <span
+                          className={`gr-struct-badge gr-struct-badge--${sStatus}`}
+                          title={
+                            sStatus === "success" ? "AI-структурировано" :
+                            sStatus === "pending" ? "Ожидает обработки" :
+                            sStatus === "failed" ? `Ошибка: ${item.structuring_error || "неизвестная"}` :
+                            "Без структурирования"
+                          }
+                        >
+                          {sStatus === "success" ? "🧠" :
+                           sStatus === "pending" ? "⏳" :
+                           sStatus === "failed" ? "⚠" : "📋"}
                         </span>
                       </span>
 
@@ -618,12 +669,12 @@ export default function Results() {
                       </span>
                     </button>
 
-                    {/* Раскрывающийся raw_text (grid 0fr -> 1fr трюк). */}
+                    {/* Раскрывающаяся панель */}
                     <div className={"gr-expand" + (open ? " is-open" : "")}>
                       <div className="gr-expand-inner">
                         <div className="gr-raw">
                           <div className="gr-raw-head">
-                            <span className="gr-raw-cap">raw_text</span>
+                            {!sd && <span className="gr-raw-cap">raw_text</span>}
                             <button
                               type="button"
                               className={
@@ -640,9 +691,168 @@ export default function Results() {
                                 : "копировать"}
                             </button>
                           </div>
-                          <pre className="gr-raw-body">
-                            {item.raw_text || "—"}
-                          </pre>
+
+                          {sd ? (
+                            <div className="gr-structured">
+                              {sd.description && (
+                                <p className="gr-sd-desc">{sd.description}</p>
+                              )}
+
+                              <div className="gr-sd-grid">
+                                {sd.category && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Категория</span>
+                                    <span className="gr-sd-value gr-sd-cat">{sd.category}</span>
+                                  </div>
+                                )}
+                                {sd.organizer && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Организатор</span>
+                                    <span className="gr-sd-value">{sd.organizer}</span>
+                                  </div>
+                                )}
+                                {sd.location && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Место</span>
+                                    <span className="gr-sd-value">{sd.location}</span>
+                                  </div>
+                                )}
+                                {sd.country && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Страна</span>
+                                    <span className="gr-sd-value">{sd.country}</span>
+                                  </div>
+                                )}
+                                {sd.deadline && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Дедлайн</span>
+                                    <span className="gr-sd-value gr-sd-deadline">{sd.deadline}</span>
+                                  </div>
+                                )}
+                                {sd.start_date && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Начало</span>
+                                    <span className="gr-sd-value">{sd.start_date}</span>
+                                  </div>
+                                )}
+                                {sd.end_date && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Окончание</span>
+                                    <span className="gr-sd-value">{sd.end_date}</span>
+                                  </div>
+                                )}
+                                {sd.funding_amount && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Финансирование</span>
+                                    <span className="gr-sd-value gr-sd-funding">
+                                      {sd.funding_amount}{sd.currency ? ` ${sd.currency}` : ""}
+                                    </span>
+                                  </div>
+                                )}
+                                {sd.stage && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Стадия</span>
+                                    <span className="gr-sd-value">{sd.stage}</span>
+                                  </div>
+                                )}
+                                {sd.language && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Язык</span>
+                                    <span className="gr-sd-value">{sd.language}</span>
+                                  </div>
+                                )}
+                                {sd.is_free != null && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Бесплатно</span>
+                                    <span className="gr-sd-value">{sd.is_free ? "Да ✓" : "Нет"}</span>
+                                  </div>
+                                )}
+                                {sd.confidence_score != null && (
+                                  <div className="gr-sd-field">
+                                    <span className="gr-sd-label">Уверенность AI</span>
+                                    <span className="gr-sd-value">
+                                      {Math.round(sd.confidence_score * 100)}%
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+
+                              {sd.eligibility && (
+                                <div className="gr-sd-block">
+                                  <span className="gr-sd-label">Кто может участвовать</span>
+                                  <p className="gr-sd-text">{sd.eligibility}</p>
+                                </div>
+                              )}
+
+                              {sd.requirements && sd.requirements.length > 0 && (
+                                <div className="gr-sd-block">
+                                  <span className="gr-sd-label">Требования</span>
+                                  <ul className="gr-sd-list">
+                                    {sd.requirements.map((r, ri) => (
+                                      <li key={ri}>{r}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {sd.benefits && sd.benefits.length > 0 && (
+                                <div className="gr-sd-block">
+                                  <span className="gr-sd-label">Преимущества</span>
+                                  <ul className="gr-sd-list">
+                                    {sd.benefits.map((b, bi) => (
+                                      <li key={bi}>{b}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {sd.full_description && (
+                                <div className="gr-sd-block">
+                                  <span className="gr-sd-label">Полное описание</span>
+                                  <p className="gr-sd-text gr-sd-full">{sd.full_description}</p>
+                                </div>
+                              )}
+
+                              {sd.tags && sd.tags.length > 0 && (
+                                <div className="gr-sd-tags">
+                                  {sd.tags.map((tag, ti) => (
+                                    <span key={ti} className="gr-sd-tag">{tag}</span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {sd.industry && sd.industry.length > 0 && (
+                                <div className="gr-sd-tags">
+                                  {sd.industry.map((ind, ii) => (
+                                    <span key={ii} className="gr-sd-tag gr-sd-tag--ind">{ind}</span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {sd.application_url && (
+                                <a
+                                  className="gr-sd-apply"
+                                  href={sd.application_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  Подать заявку →
+                                </a>
+                              )}
+                            </div>
+                          ) : (
+                            <pre className="gr-raw-body">
+                              {item.raw_text || "—"}
+                            </pre>
+                          )}
+
+                          {item.structuring_error && (
+                            <div className="gr-sd-error">
+                              ⚠ {item.structuring_error}
+                            </div>
+                          )}
+
                           <a
                             className="gr-raw-url"
                             href={item.url}
@@ -802,7 +1012,7 @@ const resultsCss = `
 }
 .gr-thead {
   display: grid;
-  grid-template-columns: 3rem 1fr 5.5rem 7.5rem 4.5rem;
+  grid-template-columns: 3rem 1fr 3rem 5.5rem 7.5rem 4.5rem;
   gap: 0.75rem; align-items: center;
   padding: 0.7rem 1rem;
   background: rgba(255,255,255,0.03);
@@ -830,7 +1040,7 @@ const resultsCss = `
 
 .gr-row {
   display: grid;
-  grid-template-columns: 3rem 1fr 5.5rem 7.5rem 4.5rem;
+  grid-template-columns: 3rem 1fr 3rem 5.5rem 7.5rem 4.5rem;
   gap: 0.75rem; align-items: center;
   width: 100%; text-align: left; cursor: pointer;
   padding: 0.85rem 1rem 0.85rem calc(1rem - 3px);
@@ -975,6 +1185,7 @@ const resultsCss = `
   }
   .gr-cell--n { grid-area: n; }
   .gr-cell--main { grid-area: main; }
+  .gr-cell--status { display: none; }
   .gr-cell--job { grid-area: job; text-align: left; }
   .gr-cell--date { display: none; }
   .gr-cell--go { grid-area: go; }
@@ -984,5 +1195,115 @@ const resultsCss = `
   .gr-page, .gr-rowblock, .gr-sk-row { animation: none; }
   .gr-dot--running, .gr-ico.is-spin { animation: none; }
   .gr-expand { transition: none; }
+}
+
+/* ---- category badge в строке ---- */
+.gr-cat-badge {
+  display: inline-block; margin-left: 0.5rem;
+  padding: 0.1rem 0.45rem; border-radius: 0.35rem;
+  font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; vertical-align: middle;
+  color: var(--gt-teal); background: rgba(88,214,192,0.12);
+  border: 1px solid rgba(88,214,192,0.3);
+}
+.gr-item-org {
+  color: var(--gt-ink-dim); font-size: 0.8rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- structuring status ---- */
+.gr-cell--status { text-align: center; }
+.gr-struct-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.8rem; height: 1.8rem; border-radius: 0.45rem;
+  font-size: 0.85rem; line-height: 1;
+  transition: transform 0.15s ease;
+}
+.gr-struct-badge:hover { transform: scale(1.15); }
+.gr-struct-badge--success { background: rgba(88,214,192,0.12); border: 1px solid rgba(88,214,192,0.3); }
+.gr-struct-badge--pending { background: rgba(240,168,80,0.1); border: 1px solid rgba(240,168,80,0.3); }
+.gr-struct-badge--failed  { background: rgba(255,107,107,0.1); border: 1px solid rgba(255,107,107,0.3); }
+.gr-struct-badge--skipped { background: rgba(255,255,255,0.03); border: 1px solid var(--gt-line); }
+
+
+
+/* ---- structured data display ---- */
+.gr-structured {
+  display: flex; flex-direction: column; gap: 0.8rem;
+}
+.gr-sd-desc {
+  margin: 0; color: var(--gt-ink); font-size: 0.92rem;
+  line-height: 1.55; border-left: 2px solid var(--gt-teal);
+  padding-left: 0.75rem;
+}
+.gr-sd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.55rem;
+}
+.gr-sd-field {
+  display: flex; flex-direction: column; gap: 0.15rem;
+  padding: 0.5rem 0.65rem; border-radius: 0.5rem;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+}
+.gr-sd-label {
+  font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--gt-ink-dim); font-weight: 600;
+}
+.gr-sd-value {
+  color: var(--gt-ink); font-size: 0.88rem; font-weight: 500;
+  word-break: break-word;
+}
+.gr-sd-cat { color: var(--gt-teal); font-weight: 700; text-transform: uppercase; font-size: 0.8rem; }
+.gr-sd-deadline { color: var(--gt-amber); font-weight: 600; }
+.gr-sd-funding { color: #7aff7a; font-weight: 700; font-family: var(--gt-display); }
+
+.gr-sd-block {
+  display: flex; flex-direction: column; gap: 0.3rem;
+}
+.gr-sd-text {
+  margin: 0; color: var(--gt-ink); font-size: 0.86rem; line-height: 1.55;
+  max-height: 200px; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: rgba(240,168,80,0.4) transparent;
+}
+.gr-sd-full { font-size: 0.82rem; color: rgba(220,225,240,0.85); }
+.gr-sd-list {
+  margin: 0.2rem 0 0; padding-left: 1.2rem;
+  color: var(--gt-ink); font-size: 0.84rem; line-height: 1.6;
+}
+.gr-sd-list li::marker { color: var(--gt-teal); }
+
+.gr-sd-tags {
+  display: flex; flex-wrap: wrap; gap: 0.35rem;
+}
+.gr-sd-tag {
+  display: inline-block; padding: 0.2rem 0.55rem;
+  border-radius: 999px; font-size: 0.72rem; font-weight: 600;
+  color: var(--gt-amber); background: rgba(240,168,80,0.1);
+  border: 1px solid rgba(240,168,80,0.3);
+}
+.gr-sd-tag--ind {
+  color: #7aa2ff; background: rgba(122,162,255,0.1);
+  border-color: rgba(122,162,255,0.3);
+}
+
+.gr-sd-apply {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  align-self: flex-start;
+  padding: 0.45rem 0.9rem; border-radius: 0.55rem;
+  font-size: 0.82rem; font-weight: 700; text-decoration: none;
+  color: #0a0d16; background: var(--gt-teal);
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+.gr-sd-apply:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(88,214,192,0.35);
+}
+
+.gr-sd-error {
+  margin-top: 0.4rem; padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem; font-size: 0.76rem;
+  color: #ffb4b4; background: rgba(255,107,107,0.08);
+  border: 1px solid rgba(255,107,107,0.25);
 }
 `;

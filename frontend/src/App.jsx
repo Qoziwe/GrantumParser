@@ -1,8 +1,12 @@
+import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, NavLink, Routes, Route } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import LogsPage from "./pages/LogsPage";
 import Results from "./pages/Results";
 import Profiles from "./pages/Profiles";
+import Catalog from "./pages/Catalog";
+import Login from "./pages/Login";
+import { api, logout } from "./api";
 
 /**
  * Каркас админки Grantum.
@@ -11,8 +15,48 @@ import Profiles from "./pages/Profiles";
  * - NavLink сам помечает активную ссылку (className получает { isActive }).
  * - Роут "/" end, чтобы не матчился вместе с /logs и /results.
  * - /logs/:jobId — опциональный параметр для прямых ссылок на задачу.
+ *
+ * Аутентификация: пока /jobs не ответил успешно, весь контент скрыт
+ * за экраном логина. Событие gt:unauthorized (401 из api.js) снова
+ * показывает логин — например, после истечения сессии.
  */
 export default function App() {
+  const [authed, setAuthed] = useState(false); // null = проверяется
+  const [checking, setChecking] = useState(true);
+
+  const checkAuth = useCallback(async () => {
+    setChecking(true);
+    try {
+      await api.get("/jobs");
+      setAuthed(true);
+    } catch {
+      setAuthed(false);
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkAuth();
+    const onUnauthorized = () => setAuthed(false);
+    window.addEventListener("gt:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("gt:unauthorized", onUnauthorized);
+  }, [checkAuth]);
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } catch {
+      /* сессия уже мертва — не страшно */
+    }
+    setAuthed(false);
+  }
+
+  if (!authed) {
+    if (checking) return null; // короткая проверка сессии без мигания
+    return <Login onSuccess={() => setAuthed(true)} />;
+  }
+
   return (
     <BrowserRouter>
       <style>{shellCss}</style>
@@ -62,14 +106,32 @@ export default function App() {
               Результаты
             </NavLink>
             <NavLink
-              to="/profiles"
+              to="/catalog"
               className={({ isActive }) =>
                 "gt-nav-link" + (isActive ? " is-active" : "")
               }
             >
               <span className="gt-nav-index">04</span>
+              Каталог
+            </NavLink>
+            <NavLink
+              to="/profiles"
+              className={({ isActive }) =>
+                "gt-nav-link" + (isActive ? " is-active" : "")
+              }
+            >
+              <span className="gt-nav-index">05</span>
               Профили
             </NavLink>
+
+            <button
+              type="button"
+              className="gt-logout"
+              onClick={handleLogout}
+              title="Завершить сессию"
+            >
+              выход
+            </button>
           </nav>
         </header>
 
@@ -79,6 +141,7 @@ export default function App() {
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/logs/:jobId" element={<LogsPage />} />
             <Route path="/results" element={<Results />} />
+            <Route path="/catalog" element={<Catalog />} />
             <Route path="/profiles" element={<Profiles />} />
             <Route path="*" element={<Dashboard />} />
           </Routes>
@@ -271,6 +334,16 @@ body {
 .gt-nav-link.is-active { color: var(--gt-ink); }
 .gt-nav-link.is-active .gt-nav-index { color: var(--gt-amber); }
 .gt-nav-link.is-active::after { transform: scaleX(1); }
+
+.gt-logout {
+  background: none; border: 1px solid var(--gt-line); border-radius: 999px;
+  padding: 0.35rem 0.9rem; cursor: pointer;
+  color: var(--gt-ink-dim); font: inherit; font-size: 0.8rem;
+  letter-spacing: 0.05em; transition: all 0.18s ease;
+}
+.gt-logout:hover {
+  color: #ff8f7a; border-color: rgba(255,143,122,0.5);
+}
 
 .gt-content {
   flex: 1;

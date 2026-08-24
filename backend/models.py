@@ -351,6 +351,15 @@ class Log(db.Model):
         }
 
 
+class StructuringStatus:
+    SKIPPED = "skipped"
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+    ALL = [SKIPPED, PENDING, SUCCESS, FAILED]
+
+
 class ParsedItem(db.Model):
     """
     Спаршенные элементы: гранты, акселераторы, ивенты и т.д.
@@ -381,6 +390,28 @@ class ParsedItem(db.Model):
         nullable=True
     )
 
+    source_url = db.Column(
+        db.String(2048),
+        nullable=True
+    )
+
+    structured_data = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    structuring_status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=StructuringStatus.SKIPPED,
+        index=True
+    )
+
+    structuring_error = db.Column(
+        db.Text,
+        nullable=True
+    )
+
     created_at = db.Column(
         db.DateTime,
         default=utcnow,
@@ -396,12 +427,25 @@ class ParsedItem(db.Model):
         return f"<ParsedItem {self.id} job_id={self.job_id} title={self.title}>"
 
     def to_dict(self):
+        import json as _json
+
+        structured = None
+        if self.structured_data:
+            try:
+                structured = _json.loads(self.structured_data)
+            except (ValueError, TypeError):
+                structured = None
+
         return {
             "id": self.id,
             "job_id": self.job_id,
             "title": self.title,
             "url": self.url,
             "raw_text": self.raw_text,
+            "source_url": self.source_url,
+            "structured_data": structured,
+            "structuring_status": self.structuring_status,
+            "structuring_error": self.structuring_error,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

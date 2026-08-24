@@ -7,6 +7,7 @@ from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
 
 import config
+import auth as auth_mod
 from models import (
     db,
     Job,
@@ -25,12 +26,31 @@ from url_utils import (
 from seed_profiles import ensure_f6s_seed_profile
 import analyzer
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    # Статика фронтенда (если собрана во frontend/dist) отдаётся с теми же
+    # security-заголовками; при dev-режиме фронт работает через Vite.
+    static_folder=None,
+)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = config.SQLALCHEMY_DATABASE_URI
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = config.SQLALCHEMY_TRACK_MODIFICATIONS
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MiB на тело запроса
 
-CORS(app)
+# Куки сессии: HttpOnly + SameSite=Lax; Secure — по конфигу/окружению.
+_SESSION_SECURE = config.SESSION_COOKIE_SECURE
+if _SESSION_SECURE == "auto":
+    _SESSION_SECURE = str(config.SERVER_LOCATION == "vps").lower()
+
+# Фронтенд живёт на другом порту => другой origin. Для передачи сессионных
+# кук нужны точные origins (не "*") + supports_credentials.
+CORS(
+    app,
+    origins=config.CORS_ORIGINS,
+    supports_credentials=True,
+    allow_headers=["Content-Type", "X-CSRF-Token"],
+    max_age=600,
+)
 
 db.init_app(app)
 
@@ -107,10 +127,76 @@ def _migrate_sqlite_schema():
             "CREATE INDEX IF NOT EXISTS ix_jobs_created_at ON jobs (created_at)"
         ))
 
+    # Миграция parsed_items
+    if inspector.has_table("parsed_items"):
+        items_columns = {
+            column["name"]
+            for column in inspector.get_columns("parsed_items")
+        }
+
+        with db.engine.begin() as conn:
+            if "source_url" not in items_columns:
+                conn.execute(text(
+                    "ALTER TABLE parsed_items ADD COLUMN source_url VARCHAR(2048)"
+                ))
+
+            if "structured_data" not in items_columns:
+                conn.execute(text(
+                    "ALTER TABLE parsed_items ADD COLUMN structured_data TEXT"
+                ))
+
+            if "structuring_status" not in items_columns:
+                conn.execute(text(
+                    "ALTER TABLE parsed_items ADD COLUMN "
+                    "structuring_status VARCHAR(20) NOT NULL DEFAULT 'skipped'"
+                ))
+
+            if "structuring_error" not in items_columns:
+                conn.execute(text(
+                    "ALTER TABLE parsed_items ADD COLUMN structuring_error TEXT"
+                ))
+
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_parsed_items_structuring_status "
+                "ON parsed_items (structuring_status)"
+            ))
+
 
 with app.app_context():
     db.create_all()
     _migrate_sqlite_schema()
+
+    # Инициализация таблиц авторизации в той же SQLite-базе
+    _sqlite_path = None
+    try:
+        raw_path = db.engine.url.database
+        if raw_path:
+            import os as _os
+            _sqlite_path = (
+                raw_path if _os.path.isabs(raw_path)
+                else _os.path.abspath(_os.path.join(app.instance_path or ".", raw_path))
+            )
+    except Exception:
+        _sqlite_path = None
+    auth_mod.init_auth_db(_sqlite_path)
+
+    # Первичный пароль: из конфига или сгенерированный (печатается в консоль).
+    with auth_mod._connect() as _auth_conn:
+        auth_mod._ensure_tables(_auth_conn)
+        if not auth_mod.is_password_set(_auth_conn):
+            if config.AUTH_PASSWORD:
+                initial_password = config.AUTH_PASSWORD
+                print("[auth] Установлен пароль из AUTH_PASSWORD (.env).")
+            else:
+                import secrets as _secrets
+                initial_password = _secrets.token_urlsafe(12)
+                print("=" * 60)
+                print("[auth] Пароль доступа не задан в .env.")
+                print(f"[auth] СГЕНЕРИРОВАН ПАРОЛЬ: {initial_password}")
+                print("[auth] Сохрани его и/или задай AUTH_PASSWORD в .env,")
+                print("[auth] чтобы он не менялся при каждом старте.")
+                print("=" * 60)
+            auth_mod.set_password(_auth_conn, initial_password)
 
     # Создаём seed-профиль F6S, если его нет
     ensure_f6s_seed_profile()
@@ -128,6 +214,210 @@ with app.app_context():
     )
 
     db.session.commit()
+
+
+# ============================================================
+# Аутентификация: before_request / after_request
+# ============================================================
+
+# Маршруты, доступные без аутентификации.
+_PUBLIC_PATHS = {"/api/auth/login", "/api/auth/status", "/api/auth/setup"}
+
+# Безопасные методы, не требующие CSRF-токена.
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _client_ip():
+    return auth_mod._client_ip(
+        request.remote_addr or "?",
+        request.headers.get("X-Forwarded-For"),
+    )
+
+
+def _set_auth_cookies(resp, session_token=None, csrf_token=None):
+    """Выставляет cookie сессии и CSRF. Secure управляется конфигом."""
+    secure = str(_SESSION_SECURE) == "true"
+    if session_token:
+        resp.set_cookie(
+            auth_mod.SESSION_COOKIE_NAME,
+            session_token,
+            max_age=auth_mod.SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="Lax",
+            secure=secure,
+            path="/",
+        )
+    else:
+        resp.delete_cookie(auth_mod.SESSION_COOKIE_NAME, path="/")
+    if csrf_token:
+        # CSRF-куку читает JS фронтенда -> НЕ HttpOnly.
+        resp.set_cookie(
+            auth_mod.CSRF_COOKIE_NAME,
+            csrf_token,
+            max_age=auth_mod.SESSION_TTL_SECONDS,
+            httponly=False,
+            samesite="Lax",
+            secure=secure,
+            path="/",
+        )
+
+
+@app.before_request
+def _auth_gate():
+    path = request.path
+
+    # Общий rate limit на API — до аутентификации.
+    if path.startswith("/api/"):
+        ip = _client_ip()
+        try:
+            auth_mod.check_api_rate(ip)
+        except auth_mod.RateLimitedError as e:
+            resp = jsonify({"error": str(e)})
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(e.retry_after)
+            return resp
+
+    if path in _PUBLIC_PATHS:
+        return None
+
+    token = request.cookies.get(auth_mod.SESSION_COOKIE_NAME)
+    if not token:
+        return jsonify({"error": "unauthorized"}), 401
+
+    with auth_mod._connect() as conn:
+        sess = auth_mod.get_session(conn, token)
+
+    if sess is None:
+        resp = jsonify({"error": "session expired"})
+        resp.status_code = 401
+        _set_auth_cookies(resp, session_token=None)
+        return resp
+
+    # CSRF для мутирующих запросов: cookie X-CSRF-Token должны совпасть.
+    if request.method not in _SAFE_METHODS:
+        cookie_csrf = request.cookies.get(auth_mod.CSRF_COOKIE_NAME)
+        header_csrf = request.headers.get("X-CSRF-Token")
+        if not auth_mod.verify_csrf(cookie_csrf, header_csrf):
+            return jsonify({"error": "csrf validation failed"}), 403
+
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=()",
+    )
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+    )
+    return resp
+
+
+# ============================================================
+# Auth API
+# ============================================================
+
+@app.route("/api/auth/status", methods=["GET"])
+def auth_status():
+    """Публичный эндпоинт: установлен ли пароль (для показа формы логина)."""
+    with auth_mod._connect() as conn:
+        return jsonify({"password_set": auth_mod.is_password_set(conn)})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    data = request.get_json(silent=True) or {}
+    password = str(data.get("password") or "")
+
+    # Ограничиваем длину входа — защита от resource-exhaustion на scrypt.
+    if len(password) > 1024:
+        return jsonify({"error": "Неверный пароль."}), 400
+
+    ip = _client_ip()
+
+    try:
+        auth_mod.check_login_rate(ip)
+        auth_mod.check_bruteforce_lock(ip)
+    except auth_mod.RateLimitedError as e:
+        resp = jsonify({"error": str(e)})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(e.retry_after)
+        return resp
+
+    with auth_mod._connect() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM auth_settings WHERE id = 1"
+        ).fetchone()
+        stored = row[0] if row else None
+        ok = bool(stored) and auth_mod.verify_password(password, stored)
+
+        if not ok:
+            auth_mod.record_failed_login(ip)
+            return jsonify({"error": "Неверный пароль."}), 401
+
+        auth_mod.reset_failed_logins(ip)
+        auth_mod.purge_expired_sessions(conn)
+        token, csrf = auth_mod.create_session(conn)
+
+    resp = jsonify({"ok": True})
+    _set_auth_cookies(resp, session_token=token, csrf_token=csrf)
+    return resp
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    token = request.cookies.get(auth_mod.SESSION_COOKIE_NAME)
+    with auth_mod._connect() as conn:
+        auth_mod.destroy_session(conn, token)
+    resp = jsonify({"ok": True})
+    _set_auth_cookies(resp, session_token=None)
+    return resp
+
+
+@app.route("/api/auth/password", methods=["POST"])
+def auth_change_password():
+    """Смена пароля (требует активную сессию + CSRF)."""
+    data = request.get_json(silent=True) or {}
+    new_password = str(data.get("new_password") or "")
+    old_password = str(data.get("old_password") or "")
+
+    ip = _client_ip()
+    try:
+        auth_mod.check_bruteforce_lock(ip)
+    except auth_mod.RateLimitedError as e:
+        resp = jsonify({"error": str(e)})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(e.retry_after)
+        return resp
+
+    with auth_mod._connect() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM auth_settings WHERE id = 1"
+        ).fetchone()
+        stored = row[0] if row else None
+
+        if not (stored and auth_mod.verify_password(old_password, stored)):
+            auth_mod.record_failed_login(ip)
+            return jsonify({"error": "Текущий пароль неверен."}), 401
+
+        try:
+            auth_mod.set_password(conn, new_password)
+        except auth_mod.AuthError as e:
+            return jsonify({"error": str(e)}), 400
+
+    resp = jsonify({"ok": True})
+    # Все сессии инвалидированы set_password — чистим куки.
+    _set_auth_cookies(resp, session_token=None)
+    return resp
 
 
 @app.route("/api/parse", methods=["POST"])

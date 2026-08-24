@@ -9,12 +9,13 @@ from playwright.sync_api import sync_playwright
 
 from models import (
     db, Job, Log, ParsedItem, JobStatus, LogLevel, SiteProfile,
-    ChildProfile, utcnow,
+    ChildProfile, StructuringStatus, utcnow,
 )
 from url_utils import normalize_target_url, find_best_profile, normalize_path_prefix
 import analyzer
 import notifier
 import config
+import structurer
 
 BASE_DIR = Path(__file__).resolve().parent
 DEBUG_DIR = BASE_DIR / "debug"
@@ -309,7 +310,14 @@ def _card_url(card, instruction, base_url):
     selector = instruction["fields"]["link_selector"]
     href = None
     try:
-        node = card.query_selector(selector)
+        if not selector:
+            node = card
+        else:
+            node = card.query_selector(selector)
+            
+        if node is None and card.get_attribute("href"):
+            node = card
+            
         if node:
             href = node.get_attribute("href")
     except Exception:
@@ -558,9 +566,16 @@ def _validate_page(page, instruction, job_id):
                 except Exception as e:
                     return False, f"Невалидный CSS в title_selector: {e}", cards_count
             
-            if link_selector:
+            if link_selector is not None:
                 try:
-                    link_node = card.query_selector(link_selector)
+                    if not link_selector:
+                        link_node = card
+                    else:
+                        link_node = card.query_selector(link_selector)
+                    
+                    if link_node is None and card.get_attribute("href"):
+                        link_node = card
+                        
                     if link_node is None:
                         empty_links += 1
                     else:
@@ -627,23 +642,30 @@ def run_universal_parser(app, job_id, target_url):
                     f"Профиль для {normalized.domain} не найден. "
                     f"Запускаю анализатор страницы."
                 )
-                _add_log(job_id, LogLevel.INFO, "анализ страницы")
-                _add_log(job_id, LogLevel.INFO, "запуск нейро анализа страницы")
-                try:
-                    profile = analyzer.analyze_and_create_profile(
-                        app, normalized, job_id
-                    )
-                except analyzer.NoProfileCreatedError as e:
-                    _add_log(job_id, LogLevel.ERROR, str(e))
-                    _set_job_status(job_id, JobStatus.FAILED)
-                    return
-                except analyzer.AnalyzerError as e:
-                    _add_log(
-                        job_id, LogLevel.ERROR,
-                        f"Анализатор не смог создать профиль: {e}"
-                    )
-                    _set_job_status(job_id, JobStatus.FAILED)
-                    return
+                max_attempts = 2
+                for attempt in range(1, max_attempts + 1):
+                    _add_log(job_id, LogLevel.INFO, f"анализ страницы (попытка {attempt}/{max_attempts})")
+                    _add_log(job_id, LogLevel.INFO, "запуск нейро анализа страницы")
+                    try:
+                        profile = analyzer.analyze_and_create_profile(
+                            app, normalized, job_id
+                        )
+                        break
+                    except analyzer.NoProfileCreatedError as e:
+                        _add_log(job_id, LogLevel.ERROR, str(e))
+                        _set_job_status(job_id, JobStatus.FAILED)
+                        return
+                    except analyzer.AnalyzerError as e:
+                        _add_log(
+                            job_id, LogLevel.ERROR,
+                            f"Анализатор не смог создать профиль: {e}"
+                        )
+                        if attempt < max_attempts:
+                            _add_log(job_id, LogLevel.INFO, "Пробую еще раз проанализировать страницу...")
+                            time.sleep(2)
+                        else:
+                            _set_job_status(job_id, JobStatus.FAILED)
+                            return
 
             elif not profile.is_active:
                 # Профиль сломан, проверяем кулдаун (используем Python utcnow())
@@ -663,27 +685,34 @@ def run_universal_parser(app, job_id, target_url):
                         f"Профиль {profile.domain}{profile.path_prefix} "
                         f"неактивен, кулдаун прошёл. Пересканирую."
                     )
-                    _add_log(job_id, LogLevel.INFO, "анализ страницы")
-                    _add_log(job_id, LogLevel.INFO, "запуск нейро анализа страницы")
-                    try:
-                        profile = analyzer.regenerate_profile(
-                            app, profile, job_id, "Кулдаун прошёл"
-                        )
-                        if not profile.is_active:
+                    max_attempts = 2
+                    for attempt in range(1, max_attempts + 1):
+                        _add_log(job_id, LogLevel.INFO, f"анализ страницы (попытка {attempt}/{max_attempts})")
+                        _add_log(job_id, LogLevel.INFO, "запуск нейро анализа страницы")
+                        try:
+                            profile = analyzer.regenerate_profile(
+                                app, profile, job_id, "Кулдаун прошёл"
+                            )
+                            if not profile.is_active:
+                                _add_log(
+                                    job_id, LogLevel.ERROR,
+                                    f"Пересканирование не удалось. "
+                                    f"Ошибка: {profile.last_error}"
+                                )
+                                _set_job_status(job_id, JobStatus.FAILED)
+                                return
+                            break
+                        except analyzer.AnalyzerError as e:
                             _add_log(
                                 job_id, LogLevel.ERROR,
-                                f"Пересканирование не удалось. "
-                                f"Ошибка: {profile.last_error}"
+                                f"Повторный анализ не удался: {e}"
                             )
-                            _set_job_status(job_id, JobStatus.FAILED)
-                            return
-                    except analyzer.AnalyzerError as e:
-                        _add_log(
-                            job_id, LogLevel.ERROR,
-                            f"Повторный анализ не удался: {e}"
-                        )
-                        _set_job_status(job_id, JobStatus.FAILED)
-                        return
+                            if attempt < max_attempts:
+                                _add_log(job_id, LogLevel.INFO, "Пробую еще раз проанализировать страницу...")
+                                time.sleep(2)
+                            else:
+                                _set_job_status(job_id, JobStatus.FAILED)
+                                return
 
             # Пере-привязываем профиль к текущей сессии: analyzer мог вернуть
             # detached-объект (собственный app_context был уже закрыт).
@@ -778,6 +807,10 @@ def run_universal_parser(app, job_id, target_url):
             job = db.session.get(Job, job_id)
             parse_mode = (job.parse_mode if job else "fast") or "fast"
             detail_enabled = parse_mode == "smart"
+            structuring_enabled = (
+                detail_enabled
+                and config.SMART_STRUCTURING_ENABLED
+            )
 
             requested_max_pages = job.max_pages if job else 1
             max_pages = min(
@@ -825,6 +858,16 @@ def run_universal_parser(app, job_id, target_url):
 
                 if detail_enabled:
                     detail_page = context.new_page()
+
+                # Запускаем фоновый воркер для AI-структурирования
+                structuring_worker = None
+                if structuring_enabled:
+                    structuring_worker = structurer.StructuringWorker(
+                        app, job_id,
+                        batch_size=config.SMART_STRUCTURING_BATCH_SIZE,
+                        max_retries=config.SMART_STRUCTURING_MAX_RETRIES,
+                    )
+                    structuring_worker.start()
 
                 mode = ("полный текст (с переходами)" if detail_enabled
                         else "быстрый (только листинг)")
@@ -968,7 +1011,10 @@ def run_universal_parser(app, job_id, target_url):
                             old_url = page.url
 
                             try:
-                                button.click()
+                                try:
+                                    button.click(timeout=10000)
+                                except Exception:
+                                    button.evaluate("el => el.click()")
                             except Exception as e:
                                 _add_log(
                                     job_id, LogLevel.ERROR,
@@ -1065,7 +1111,10 @@ def run_universal_parser(app, job_id, target_url):
                             )
 
                             try:
-                                button.click()
+                                try:
+                                    button.click(timeout=10000)
+                                except Exception:
+                                    button.evaluate("el => el.click()")
                             except Exception as e:
                                 _add_log(
                                     job_id, LogLevel.ERROR,
@@ -1380,17 +1429,41 @@ def run_universal_parser(app, job_id, target_url):
                                             if listing_text else extra
                                         )
 
-                            db.session.add(ParsedItem(
+                            # Определяем статус структурирования
+                            should_structurize = (
+                                structuring_enabled
+                                and detail_processed_for_item
+                                and raw_text
+                                and len(raw_text.strip()) > 20
+                            )
+
+                            final_url = detail_url if detail_processed_for_item else item_url
+                            parsed_item = ParsedItem(
                                 job_id=job_id,
                                 title=title,
-                                url=detail_url if detail_processed_for_item else item_url,
+                                url=final_url,
                                 raw_text=raw_text,
-                            ))
+                                source_url=item_url,
+                                structuring_status=(
+                                    StructuringStatus.PENDING
+                                    if should_structurize
+                                    else StructuringStatus.SKIPPED
+                                ),
+                            )
+                            db.session.add(parsed_item)
                             db.session.commit()
                             processed += 1
+
+                            # Отправляем в фоновый воркер для структурирования
+                            if should_structurize and structuring_worker:
+                                structuring_worker.enqueue(parsed_item.id)
+
+                            status_icon = (
+                                "🧠" if should_structurize else "📋"
+                            )
                             _add_log(
                                 job_id, LogLevel.INFO,
-                                f"обработана карточка {processed} / "
+                                f"{status_icon} обработана карточка {processed} / "
                                 f"{total_found + len(cards)}: "
                                 f"{title[:60]}"
                             )
@@ -1452,6 +1525,21 @@ def run_universal_parser(app, job_id, target_url):
                         pages_since_rest = 0
                     else:
                         time.sleep(random.uniform(*PAGE_DELAY))
+
+            # Ждём завершения фонового структурирования
+            if structuring_worker is not None:
+                _add_log(
+                    job_id, LogLevel.INFO,
+                    "[Structurer] Парсинг завершён, ожидаю окончания "
+                    "структурирования оставшихся карточек..."
+                )
+                structuring_worker.stop_and_wait(timeout=300.0)
+                stats = structuring_worker.stats
+                _add_log(
+                    job_id, LogLevel.INFO,
+                    f"[Structurer] Итог: структурировано {stats['processed']}, "
+                    f"ошибок {stats['failed']}."
+                )
 
             _add_log(
                 job_id, LogLevel.INFO,

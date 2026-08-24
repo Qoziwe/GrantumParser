@@ -66,3 +66,11 @@ temp/
 *~
 .DS_Store
 Thumbs.db
+
+# Trae AI assistant workspace files
+.agents/
+.trae/
+.code_index/
+
+# Local code-memory MCP server
+code_memory/

@@ -356,7 +356,7 @@ def _build_llm_prompts(
         "    \"card_selector\": \"<CSS-селектор одного повторяющегося элемента-карточки, строка>\",\n"
         "    \"fields\": {\n"
         "        \"title_selector\": \"<CSS-селектор заголовка внутри карточки>\",\n"
-        "        \"link_selector\": \"<CSS-селектор ссылки внутри карточки>\",\n"
+        "        \"link_selector\": \"<CSS-селектор ссылки внутри карточки, или пустая строка если сама карточка является ссылкой>\",\n"
         "        \"text_selectors\": [\"<CSS-селекторы дополнительного текста>\"],\n"
         "        \"text_fallback\": \"card_inner_text\"\n"
         "    },\n"
@@ -602,9 +602,13 @@ def _validate_instruction(instruction: dict, normalized: NormalizedUrl) -> None:
 
     for required_key in ("title_selector", "link_selector"):
         val = fields.get(required_key)
-        if not isinstance(val, str) or not val.strip():
+        if not isinstance(val, str):
             raise AnalyzerError(
-                f"fields.{required_key} обязателен и должен быть непустой строкой."
+                f"fields.{required_key} обязателен и должен быть строкой."
+            )
+        if required_key == "title_selector" and not val.strip():
+            raise AnalyzerError(
+                f"fields.title_selector обязателен и должен быть непустой строкой."
             )
 
     pagination = instruction.get("pagination")
@@ -683,7 +687,14 @@ def _smoke_test(page: Page, instruction: dict, job_id: int) -> None:
             ) from exc
 
         try:
-            link_node = card.query_selector(link_selector)
+            if not link_selector:
+                link_node = card
+            else:
+                link_node = card.query_selector(link_selector)
+            
+            if link_node is None and card.get_attribute("href"):
+                link_node = card
+
             if link_node is None:
                 empty_links += 1
             else:

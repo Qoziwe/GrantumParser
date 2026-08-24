@@ -7,35 +7,34 @@
 ## Что нового в Universal Edition
 
 Проект эволюционировал из F6S-специфичного парсера в универсальный движок:
+- **Автоматический анализ сайтов**: LLM анализирует любую страницу и создаёт JSON-инструкцию (профиль сайта)
+- **Самолечение**: При смене вёрстки система автоматически пересканирует профиль
+- **Human-in-the-loop**: Telegram-уведомления при капче/авторизации
+- **Кэширование**: Повторный запуск по тому же сайту НЕ вызывает LLM
+- **Управление профилями**: Страница `/profiles` для просмотра, пересканирования и удаления
+- **Два режима парсинга**: Быстрый (`fast`) — только карточки листинга; Умный (`smart`) — дополнительно переходит в detail-страницы карточек и извлекает их содержимое
+- **Дочерние профили (ChildProfile)**: В умном режиме селекторы detail-страниц сохраняются отдельно и привязываются к родительскому профилю листинга. При повторных заходах на однотипные detail-страницы профиль переиспользуется, LLM вызывается только для незнакомых структур.
+- **Пул LLM API-ключей с ротацией**: Автоматическое переключение между несколькими API-ключами при достижении лимитов (RPM, TPM, дневной лимит).
 
-- **Автоматический анализ сайтов:** LLM анализирует любую страницу и создаёт JSON-инструкцию (профиль сайта)
-- **Самолечение:** При смене вёрстки система автоматически пересканирует профиль
-- **Human-in-the-loop:** Telegram-уведомления при капче/авторизации
-- **Кэширование:** Повторный запуск по тому же сайту НЕ вызывает LLM
-- **Управление профилями:** Страница `/profiles` для просмотра, пересканирования и удаления
-- **Два режима парсинга:** Быстрый (`fast`) — только карточки листинга; Умный (`smart`) — дополнительно переходит в detail-страницы карточек и извлекает их содержимое
-- **Дочерние профили (ChildProfile):** В умном режиме селекторы detail-страниц сохраняются отдельно и привязываются к родительскому профилю листинга. При повторных заходах на однотипные detail-страницы профиль переиспользуется, LLM вызывается только для незнакомых структур.
+---
 
 ## Режимы парсинга и дочерние профили (ChildProfile)
 
 ### Быстрый режим (`fast`)
-
 - Извлекает только карточки листинга по инструкции родительского `SiteProfile`.
 - По ссылкам карточек не переходит.
 - Обрабатывает заданное пользователем количество страниц/итераций.
 
 ### Умный режим (`smart`)
-
 - Извлекает карточки листинга, как в быстром режиме.
 - Для каждой карточки берёт URL detail-страницы и переходит по нему.
-- Пытается найти подходящий **дочерний профиль** (`ChildProfile`) для структуры detail-страницы:
-  - если найден — загружает его JSON-инструкцию, LLM **не вызывается**;
+- Пытается найти подходящий дочерний профиль (`ChildProfile`) для структуры detail-страницы:
+  - если найден — загружает его JSON-инструкцию, LLM не вызывается;
   - если не найден — вызывает LLM для анализа detail-страницы, сохраняет новую инструкцию в базу как `ChildProfile`, привязанный к родительскому профилю (`parent_profile_id`), и использует её.
-- Для всех страниц с одинаковым URL-шаблоном (например `/item?id=123` и `/item?id=456` → `path_prefix=/item`) создаётся **один** дочерний профиль, а не по одному на каждую карточку.
+- Для всех страниц с одинаковым URL-шаблоном (например `/item?id=123` и `/item?id=456` → `path_prefix=/item`) создаётся один дочерний профиль, а не по одному на каждую карточку.
 
-Архитектура привязки:
-
-```text
+**Архитектура привязки:**
+```
 SiteProfile (листинг: news.ycombinator.com/)
     └── ChildProfile (detail: news.ycombinator.com/item?id=...)
 ```
@@ -52,27 +51,25 @@ SiteProfile (листинг: news.ycombinator.com/)
 ### Логирование вызовов нейросети
 
 Перед каждым анализом страницы через LLM парсер пишет в лог две записи:
-
-```text
-анализ страницы
-запуск нейро анализа страницы
-```
+- "анализ страницы"
+- "запуск нейро анализа страницы"
 
 Эти сообщения появляются в следующих случаях:
-
 - первичный анализ неизвестного сайта при создании `SiteProfile`;
 - повторный анализ неактивного профиля после окончания кулдауна;
 - анализ неизвестной detail-структуры при создании `ChildProfile`.
 
 Обычная обработка карточки без вызова LLM таких сообщений не создаёт.
 
+---
 
 ## Архитектура проекта
 
 Проект разделен на две основные части:
-
 - **Backend (Python / Flask / SQLAlchemy / Playwright / OpenAI API)** — отвечает за управление задачами (Jobs), анализ сайтов через LLM, запуск парсера через headless/CDP Chrome, сохранение результатов в SQLite и выдачу данных по REST API.
 - **Frontend (React / Vite / React Router)** — пользовательский интерфейс (SPA), предоставляющий функционал запуска парсинга, просмотра логов в реальном времени, выгрузки спарщенных результатов в CSV и управления профилями сайтов.
+
+---
 
 ## Backend
 
@@ -80,30 +77,34 @@ SiteProfile (листинг: news.ycombinator.com/)
 
 ### Структура директории `backend/`
 
-#### 1. `config.py` (НОВЫЙ)
+#### 1. `config.py` (ИЗМЕНЁННЫЙ)
 
 Модуль централизованной конфигурации через переменные окружения.
 
 **Функции:**
-
 - `_load_env_file()`: Загружает `.env` через `python-dotenv` (приоритет: `backend/.env` → `.env` в cwd). `override=False`, чтобы системные переменные имели приоритет.
 - `_get_str(key, default, empty_as_default)`: Читает строковую переменную с опциональной обработкой пустых значений.
 - `_get_int(key, default)`: Читает целочисленную переменную с fallback на default при ошибке парсинга.
+- `_get_str_list(key, default)`: Читает список строк через запятую/точку с запятой.
 
 **Переменные конфигурации:**
-
 - `SERVER_LOCATION`: `"home"` | `"vps"` (дефолт `"home"`). Влияет на текст Telegram-уведомлений.
 - `CDP_URL`: Адрес CDP-браузера (дефолт `"http://localhost:9222"`).
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: Для notifier. Если пустые — уведомления выключены.
 - `PUBLIC_BROWSER_URL`: Используется только при `SERVER_LOCATION=vps` (ссылка на noVNC).
 - `HUMAN_WAIT_SECONDS`: Сколько ждать действия человека при капче/авторизации (дефолт `600`).
-- `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`: Настройки OpenAI-совместимого API.
+- `LLM_API_KEYS`: Список API-ключей через запятую для пула ключей с ротацией (дефолт пустой). **Рекомендуемый способ**.
+- `LLM_API_KEY`: Одиночный API-ключ (устарело, оставлено для обратной совместимости). Игнорируется, если задан `LLM_API_KEYS`.
+- `LLM_MODEL`: Модель LLM (дефолт `"gpt-4o-mini"`).
+- `LLM_BASE_URL`: Базовый URL API (дефолт `"https://api.openai.com/v1"`).
+- `LLM_RPM_LIMIT`: Лимит запросов в минуту на один ключ (дефолт `15`).
+- `LLM_TPM_LIMIT`: Лимит токенов в минуту на один ключ (дефолт `250000`).
+- `LLM_DAILY_REQUEST_LIMIT`: Лимит запросов в день на один ключ (дефолт `500`).
+- `LLM_KEY_WAIT_SECONDS`: Сколько секунд ждать освобождения ключа при временных лимитах (дефолт `120`).
 - `ANALYZER_MAX_DOM_CHARS`: Лимит размера DOM для analyzer (дефолт `200000`).
 - `PROFILE_RESCAN_COOLDOWN_SECONDS`: Кулдаун после неудачного пересканирования (дефолт `3600`).
-- `SMART_MAX_DETAIL_PAGES`: Резервное значение максимума переходов на detail-страницы карточек за запуск (дефолт `100`). Для новых задач значение из этого параметра используется, если пользователь не передал `maxDetailPages`.
-- `SMART_MAX_NEW_CHILD_PROFILES`: Резервное значение максимума новых дочерних профилей (вызовов LLM) за запуск (дефолт `20`). Для задач используется персональный лимит `Job.max_child_profiles`, который пользователь задаёт на главном экране.
-- `maxDetailPages` не имеет верхнего ограничения: проверяется только целое значение не меньше `1`.
-- `maxChildProfiles` не имеет верхнего ограничения: проверяется только целое значение не меньше `1`.
+- `SMART_MAX_DETAIL_PAGES`: Резервное значение максимума переходов на detail-страницы карточек за запуск (дефолт `100`).
+- `SMART_MAX_NEW_CHILD_PROFILES`: Резервное значение максимума новых дочерних профилей (вызовов LLM) за запуск (дефолт `20`).
 - `SQLALCHEMY_DATABASE_URI`: URI базы данных (дефолт `"sqlite:///db.sqlite3"`).
 
 #### 2. `url_utils.py` (НОВЫЙ)
@@ -111,7 +112,6 @@ SiteProfile (листинг: news.ycombinator.com/)
 Утилиты для нормализации URL и матчинга профилей сайтов.
 
 **Классы:**
-
 - `UrlValidationError`: Исключение при невалидном URL (не http/https, пустой host).
 - `NormalizedUrl` (dataclass): Нормализованное представление URL. Поля:
   - `original`: Исходная строка после `strip()`.
@@ -121,64 +121,130 @@ SiteProfile (листинг: news.ycombinator.com/)
   - `query`, `fragment`: Сохраняются для executor, но НЕ используются для матчинга.
 
 **Функции:**
-
 - `normalize_path_prefix(prefix)`: Приводит `path_prefix` профиля к каноническому виду (`""` → `"/"`, `"/programs/"` → `"/programs"`).
-- `normalize_target_url(raw_url)`: Нормализует URL пользователя. Правила: только http/https, host без `www.`, путь с `/`, query/fragment игнорируются для матчинга.
-- `find_best_profile(normalized)`: Ищет лучший `SiteProfile` для нормализованного URL. Логика: домен должен совпадать, `path_prefix` должен подходить под путь (точный или префикс + `/`), из подходящих выбирается самый длинный `path_prefix`.
-- `find_best_profile_for_url(raw_url)`: Удобная обёртка: нормализует URL и сразу ищет профиль.
+- `normalize_target_url(raw_url)`: Нормализует URL пользователя.
+- `find_best_profile(normalized)`: Ищет лучший `SiteProfile` для нормализованного URL.
+- `find_best_profile_for_url(raw_url)`: Удобная обёртка.
 
 #### 3. `seed_profiles.py` (НОВЫЙ)
 
 Модуль для создания seed-профилей известных сайтов при старте приложения.
 
 **Константы:**
-
-- `F6S_PROGRAMS_INSTRUCTION`: JSON-инструкция для `f6s.com/programs` (карточка `.result-item`, селекторы `.result-description .title a`, пагинация `html_fragment_url`, детальная страница с `#description-toggle`).
+- `F6S_PROGRAMS_INSTRUCTION`: JSON-инструкция для `f6s.com/programs`.
 
 **Функции:**
+- `ensure_f6s_seed_profile()`: Идемпотентно создаёт seed-профиль F6S, если его нет в БД.
 
-- `ensure_f6s_seed_profile()`: Идемпотентно создаёт seed-профиль F6S, если его нет в БД. Проверяет наличие по `(domain, path_prefix)`. Возвращает существующий или созданный профиль.
+#### 4. `llm_key_pool.py` (НОВЫЙ)
 
-#### 4. `llm_client.py` (НОВЫЙ)
+Менеджер пула LLM API-ключей с ротацией и учётом лимитов.
 
-Тонкий клиент для OpenAI-совместимого API (без SDK).
+**Назначение:**
+Отвечает за автоматическое переключение между несколькими API-ключами при достижении лимитов:
+- дневной лимит запросов на ключ (500/день по умолчанию);
+- минутный лимит запросов (15 RPM по умолчанию);
+- минутный лимит токенов (250k TPM по умолчанию);
+- временные cooldown для минутных лимитов;
+- блокировка ключа до следующего UTC-дня при дневном лимите;
+- блокировка ключа при auth/billing ошибках.
+
+**Архитектура:**
+- Дневные счётчики хранятся в SQLite-таблице `llm_key_pool_state`.
+- Минутные лимиты хранятся в памяти процесса через скользящее окно 60 секунд.
+- Ключи в БД не хранятся. Хранятся только `key_hash` (SHA-256) и маска вида `sk-abc...xyz`.
 
 **Исключения:**
+- `LlmKeyPoolError`: Базовая ошибка пула ключей.
+- `LlmNoAvailableKeyError`: Нет доступного ключа прямо сейчас (все в cooldown или отключены).
+- `LlmDailyLimitError`: Все ключи исчерпали дневной лимит или заблокированы.
 
-- `LlmError`: Базовая ошибка LLM-клиента.
-- `LlmDisabledError`: LLM не настроен (нет `LLM_API_KEY`).
-- `LlmResponseError`: LLM вернул невалидный JSON или неожиданную структуру.
-- `LlmHttpError`: Сетевая/HTTP-ошибка при обращении к LLM.
+**Классы:**
+- `KeyReservation`: Резервирование ключа на время запроса. Поля: `key`, `key_hash`, `estimated_tokens`, `started_at`, `finished`.
 
 **Функции:**
+- `has_keys()`: Возвращает `True`, если `LLM_API_KEYS` не пустой.
+- `acquire_key(estimated_tokens, wait_timeout)`: Выдаёт доступный ключ с учётом всех лимитов. Если все ключи временно в rate limit — ждёт до `wait_timeout`. Блокировки:
+  - дневной счётчик < `LLM_DAILY_REQUEST_LIMIT`;
+  - нет дневной блокировки;
+  - нет активного минутного cooldown;
+  - RPM < `LLM_RPM_LIMIT`;
+  - TPM < `LLM_TPM_LIMIT`.
+- `finish_success(reservation, tokens)`: Завершает успешный запрос, обновляет счётчик токенов.
+- `finish_failure(reservation)`: Завершает неуспешный запрос без пометки ключа как сломанного.
+- `mark_rate_limit(reservation, kind, retry_after, message)`: Помечает ключ как временно ограниченный.
+  - `kind="rpm"` или `"tpm"`: короткий cooldown 5–60 секунд.
+  - `kind="daily"`: блокировка до 00:00 UTC.
+  - `kind="auth"`: постоянная блокировка ключа.
+- `mark_auth(reservation, message)`: Помечает ключ как невалидный (401/402/403).
 
-- `is_enabled()`: Возвращает `True`, если `LLM_API_KEY` не пустой.
+**Логика ротации:**
+1. Перед запросом `llm_client.chat_json` оценивает примерное потребление токенов.
+2. `acquire_key()` выбирает первый доступный ключ.
+3. Если все ключи упёрлись только в минутные лимиты — ждёт до `LLM_KEY_WAIT_SECONDS`.
+4. Если все ключи упёрлись в дневной лимит — поднимается `LlmDailyLimitError`.
+5. Если пришёл 429 от провайдера:
+   - RPM/TPM → временный cooldown, ключ не считается сломанным;
+   - daily/quota/insufficient → ключ блокируется до следующего UTC-дня;
+   - 401/402/403 → ключ блокируется как невалидный.
+
+**Важное ограничение:**
+Минутные лимиты в памяти будут корректно работать только в рамках одного процесса бекенда. Если запустишь несколько worker-процессов, для RPM/TPM понадобится общий storage, например Redis.
+
+#### 5. `llm_client.py` (ИЗМЕНЁННЫЙ)
+
+Тонкий клиент для OpenAI-совместимого API (без SDK) с поддержкой пула ключей.
+
+**Исключения:**
+- `LlmError`: Базовая ошибка LLM-клиента.
+- `LlmDisabledError`: LLM не настроен (нет API-ключей).
+- `LlmResponseError`: LLM вернул невалидный JSON или неожиданную структуру.
+- `LlmHttpError`: Сетевая/HTTP-ошибка при обращении к LLM.
+- `LlmRateLimitError`: Rate limit от LLM-провайдера (базовый класс).
+- `LlmRpmLimitError`: Лимит запросов в минуту (HTTP 429 с маркерами RPM).
+- `LlmTpmLimitError`: Лимит токенов в минуту (HTTP 429 с маркерами TPM).
+- `LlmDailyLimitError`: Дневной лимит или quota (HTTP 429 с маркерами daily/quota).
+- `LlmAuthError`: Ключ отклонён: auth, billing, invalid key (HTTP 401/402/403).
+- `LlmNoAvailableKeyError`: Ни один LLM-ключ сейчас недоступен.
+
+**Функции:**
+- `is_enabled()`: Возвращает `True`, если `LLM_API_KEYS` не пустой.
 - `_build_url()`: Строит URL `{LLM_BASE_URL}/chat/completions`.
-- `_build_headers()`: Возвращает `{"Authorization": "Bearer {LLM_API_KEY}", "Content-Type": "application/json"}`.
-- `_strip_markdown_fence(raw)`: Убирает ` ```json ... ``` ` обёртку, если LLM её добавил.
+- `_build_headers(api_key)`: Возвращает `{"Authorization": "Bearer {api_key}", "Content-Type": "application/json"}`.
+- `_strip_markdown_fence(raw)`: Убирает ```json ... ``` обёртку, если LLM её добавил.
+- `_estimate_tokens(system_prompt, user_prompt, max_tokens)`: Оценивает потребление токенов для резервирования ключа.
+- `_parse_retry_after(response)`: Парсит заголовок `Retry-After` из HTTP-ответа.
+- `_classify_rate_limit(response)`: Классифицирует тип rate limit (rpm/tpm/daily) по тексту ошибки и маркерам.
+- `_extract_usage_tokens(data, estimated_tokens)`: Извлекает фактическое потребление токенов из `response.usage`.
 - `chat_json(system_prompt, user_prompt, temperature=0.2, max_tokens=None, timeout=120)`:
   - Вызов LLM с ожиданием JSON-ответа.
+  - Использует пул ключей через `llm_key_pool.acquire_key()`.
+  - При HTTP 429 классифицирует ошибку и помечает ключ через `mark_rate_limit()`.
+  - При HTTP 401/402/403 помечает ключ как невалидный через `mark_auth()`.
+  - При успехе обновляет счётчик токенов через `finish_success()`.
   - Payload: `model`, `temperature`, `messages` (system + user), `response_format: {"type": "json_object"}`.
   - Парсит `data["choices"][0]["message"]["content"]`, убирает markdown-обёртку, возвращает `dict`.
-  - Исключения: `LlmDisabledError`, `LlmHttpError`, `LlmResponseError`.
 
-#### 5. `analyzer.py` (НОВЫЙ)
+**Логика retry:**
+- Максимум попыток: `max(3, количество_ключей * 2)`.
+- При временных ошибках (429 RPM/TPM, 5xx) автоматически пробует следующий доступный ключ.
+- При дневных лимитах (429 daily/quota) поднимается `LlmDailyLimitError` без дальнейших попыток.
+- При auth ошибках (401/402/403) ключ блокируется, пробует следующий ключ.
+
+#### 6. `analyzer.py` (НОВЫЙ)
 
 Модуль анализа страницы и создания `SiteProfile`.
 
 **Исключения:**
-
 - `AnalyzerError`: Базовая ошибка анализатора.
 - `NoProfileCreatedError`: LLM не смог создать валидную инструкцию.
 
 **Классы:**
-
 - `NetworkObservation` (dataclass): Наблюдение сетевого запроса. Поля: `url`, `method`, `resource_type`, `status`.
 - `CandidateBlock` (dataclass): Повторяющийся блок DOM. Поля: `signature` (тег+классы), `count`, `example_html`.
 - `PageSignals` (dataclass): Собранные сигналы страницы. Поля: `final_url`, `title`, `cleaned_dom`, `dom_truncated`, `network_requests`, `candidate_blocks`.
 
 **Глобальные переменные:**
-
 - `_domain_locks`: Словарь `{(domain, path_prefix): threading.Lock()}` для сериализации анализа одного домена.
 - `_domain_locks_lock`: Lock для безопасного доступа к `_domain_locks`.
 - `_ALLOWED_STRATEGIES`: Допустимые стратегии пагинации v1 (`none`, `query_param_page`, `next_button`, `load_more`, `infinite_scroll`, `html_fragment_url`).
@@ -186,32 +252,29 @@ SiteProfile (листинг: news.ycombinator.com/)
 - `_STRIP_ATTRS`: Атрибуты, вырезаемые из DOM (`style`, `onclick`, `onmouseover`, `onload`, `onerror`, `data-reactid`, `data-ember-action`).
 
 **Функции:**
-
 - `_get_domain_lock(domain, path_prefix)`: Возвращает lock для `(domain, path_prefix)`, создавая при необходимости.
-- `_clean_element_html(html)`: Базовая очистка HTML: убирает шумные атрибуты через regex, схлопывает пробелы.
-- `_extract_candidate_blocks(page, max_blocks=5)`: Эвристика повторяющихся блоков. Группирует элементы DOM по сигнатуре (tagName + классы), возвращает топ-N сигнатур с количеством повторений и примером. Снижает галлюцинации LLM.
-- `_capture_cleaned_dom(page)`: Возвращает `(cleaned_dom, was_truncated)`. Удаляет `_STRIP_TAGS`, схлопывает пробелы, обрезает до `ANALYZER_MAX_DOM_CHARS` (умное усечение: первые 70%, маркер `[...усечено...]`, последние 20%).
-- `_collect_page_signals(page, target_url, job_id, navigate=True)`: Загружает страницу, собирает сетевые сигналы (XHR/fetch/document того же домена), делает короткие прокрутки для обнаружения ленивой пагинации, возвращает `PageSignals`. Параметр `navigate=False` позволяет проанализировать **уже открытую** страницу без повторной навигации (используется для detail-анализа по открытой вкладке).
-- `_build_llm_prompts(normalized, signals)`: Строит system и user промпты для LLM. System требует: строго JSON, валидные CSS, предпочитать стабильные селекторы (id, data-_, aria-_), стратегию из `_ALLOWED_STRATEGIES`, заполнять `validation` и `stop_conditions`. User содержит: URL, домен, путь, финальный URL, title, сетевые запросы (первые 80), кандидатные блоки, очищенный DOM.
-- `_validate_instruction(instruction, normalized)`: Валидирует JSON-схему. Проверяет: `schema_version=1`, `domain` совпадает, `card_selector` непустой, `fields.title_selector` и `fields.link_selector` непустые, `pagination.strategy` из `_ALLOWED_STRATEGIES`, `stop_conditions` — объект.
-- `_smoke_test(page, instruction, job_id)`: Проверяет селекторы на живой странице. Проверяет: `card_selector` даёт не менее `validation.min_cards_first_page` карточек, на первых до 5 карточках проверяет `title_selector`/`link_selector` с учётом допустимых долей пустых значений (`max_empty_title_ratio`, `max_empty_url_ratio`), синтаксис всех селекторов через `query_selector`.
-- `analyze_and_create_profile(app, normalized, job_id)`: Главная точка входа. Сериализуется по `(domain, path_prefix)` (lock с таймаутом 180 сек). Логика: если профиль уже создан — возвращает его; иначе загружает страницу, собирает сигналы, вызывает LLM (с одним ретраем при ошибке), валидирует, smoke-test, сохраняет `SiteProfile` в БД.
-- `regenerate_profile(app, profile, job_id, error_message)`: Перегенерирует инструкцию при структурном сбое. Сохраняет старую инструкцию в `previous_instructions_json`, помечает профиль как неактивный, удаляет старый профиль, запускает `analyze_and_create_profile`, возвращает обновлённый профиль.
-- `mark_profile_failed(profile, error_message)`: Помечает профиль как неактивный: `is_active=False`, `fail_count+=1`, `last_error`, `last_failure_at`, `retry_not_before=now+PROFILE_RESCAN_COOLDOWN_SECONDS`.
+- `_clean_element_html(html)`: Базовая очистка HTML.
+- `_extract_candidate_blocks(page, max_blocks=5)`: Эвристика повторяющихся блоков.
+- `_capture_cleaned_dom(page)`: Возвращает `(cleaned_dom, was_truncated)`.
+- `_collect_page_signals(page, target_url, job_id, navigate=True)`: Загружает страницу, собирает сигналы.
+- `_build_llm_prompts(normalized, signals)`: Строит system и user промпты для LLM.
+- `_validate_instruction(instruction, normalized)`: Валидирует JSON-схему.
+- `_smoke_test(page, instruction, job_id)`: Проверяет селекторы на живой странице.
+- `analyze_and_create_profile(app, normalized, job_id)`: Главная точка входа. Сериализуется по `(domain, path_prefix)` (lock с таймаутом 180 сек).
+- `regenerate_profile(app, profile, job_id, error_message)`: Перегенерирует инструкцию при структурном сбое.
+- `mark_profile_failed(profile, error_message)`: Помечает профиль как неактивный.
 
 **Detail-анализатор (умный режим / дочерние профили):**
+- `_detail_system_prompt()`: Системный промпт для LLM при анализе detail-страницы.
+- `_validate_detail_instruction(instruction, normalized)`: Валидирует detail-инструкцию.
+- `_analyze_detail_page(page, normalized, job_id)`: Собирает сигналы, вызывает LLM.
+- `analyze_and_create_child_profile(app, normalized, parent_profile_id, job_id, page)`: Создаёт `ChildProfile` для detail-страницы.
 
-- `_detail_system_prompt()`: Системный промпт для LLM при анализе detail-страницы. Требует вернуть только JSON-схему `schema_version=1` с полем `detail` (`title_selector`, `text_selectors`, `fallback_selectors`, опционально `date_selector`, `author_selector`). Явно **запрещает** листинговые поля (`card_selector`, `fields`, `pagination`), чтобы не смешивать схемы.
-- `_validate_detail_instruction(instruction, normalized)`: Валидирует detail-инструкцию: `schema_version=1`, `domain` совпадает, `detail` — объект, `title_selector` — строка, `text_selectors`/`fallback_selectors` — массивы строк.
-- `_analyze_detail_page(page, normalized, job_id)`: Собирает сигналы (**без** повторной навигации — `navigate=False`), вызывает LLM с detail-промптом, валидирует JSON, проверяет detail-селекторы через `query_selector`, вычисляет `path_prefix` (для `.../item?id=123` → `/item`, без учёта query).
-- `analyze_and_create_child_profile(app, normalized, parent_profile_id, job_id, page)`: Создаёт `ChildProfile` для detail-страницы. Вычисляет `path_prefix`, берёт lock `child:{parent_profile_id}:{domain}:{path}`, повторно проверяет существование дочернего профиля (чтобы не вызывать LLM повторно), вызывает `_analyze_detail_page` только при отсутствии, сохраняет JSON в `ChildProfile`, через `db.session.get()` возвращает свежий ORM-объект (чтобы избежать `DetachedInstanceError`).
-
-#### 6. `notifier.py` (НОВЫЙ)
+#### 7. `notifier.py` (НОВЫЙ)
 
 Модуль отправки Telegram-уведомлений о событиях, требующих человека.
 
 **Глобальные переменные:**
-
 - `GLOBAL_COOLDOWN_SECONDS`: 60 секунд между отправками.
 - `AGGREGATION_WINDOW_SECONDS`: 2 секунды для агрегации параллельных задач одного домена.
 - `_lock`: Глобальный lock для потокобезопасности.
@@ -220,49 +283,47 @@ SiteProfile (листинг: news.ycombinator.com/)
 - `_domain_pending`: Словарь `{domain: {"app", "job_ids", "urls", "reasons", "timer"}}` для агрегации.
 
 **Функции:**
-
 - `is_enabled()`: Возвращает `True`, если `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` не пустые.
-- `_compose_message(job_ids, domain, reasons, urls)`: Собирает текст Telegram-сообщения. Ветвление по `SERVER_LOCATION`:
-  - `home`: «Подойди к компьютеру — открыто окно Chrome».
-  - `vps`: «Открыть браузер сервера: {PUBLIC_BROWSER_URL}».
-  - Тексты различаются для `captcha`/`cloudflare` и `auth_required`.
-- `_send_text(text)`: Отправка через `requests.post` на `https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage`. Payload: `{"chat_id": TELEGRAM_CHAT_ID, "text": text}`.
-- `notify_human_required(app, job_id, target_url, domain, block_reason)`: Вызывается executor'ом при переходе в `WAITING_HUMAN`. Логика: если эпизод уже уведомлён — `False`; иначе добавляет job в `_domain_pending`, запускает `threading.Timer` на `AGGREGATION_WINDOW_SECONDS` для отложенной отправки.
-- `mark_human_episode_finished(job_id)`: Вызывается при завершении эпизода (человек решил, таймаут, задача упала). Удаляет job из `_job_episodes`, очищает `_domain_pending` если нет других задач.
-- `_flush_domain(domain)`: Отложенная отправка агрегированного уведомления. Проверяет глобальный кулдаун, если не прошёл — переносит отправку. Иначе вызывает `_compose_message` и `_send_text`, логирует результат.
+- `_compose_message(job_ids, domain, reasons, urls)`: Собирает текст Telegram-сообщения.
+- `_send_text(text)`: Отправка через `requests.post`.
+- `notify_human_required(app, job_id, target_url, domain, block_reason)`: Вызывается executor'ом при переходе в `WAITING_HUMAN`.
+- `mark_human_episode_finished(job_id)`: Вызывается при завершении эпизода.
+- `_flush_domain(domain)`: Отложенная отправка агрегированного уведомления.
 
-#### 7. `models.py` (ИЗМЕНЁННЫЙ)
+#### 8. `models.py` (ИЗМЕНЁННЫЙ)
 
 **Добавления:**
-
 - `JobStatus.WAITING_HUMAN`: Новый статус `"waiting_human"` (ожидание действия человека).
-- `SiteProfile` (новая модель, таблица `site_profiles`):
-  - Поля: `id`, `domain` (индекс), `path_prefix`, `instructions_json` (TEXT), `previous_instructions_json` (TEXT NULL), `version` (INT), `is_active` (BOOL), `fail_count` (INT), `retry_not_before` (DATETIME NULL), `last_success_at`, `last_failure_at`, `last_error` (TEXT NULL), `created_at`, `updated_at`.
-  - Уникальный составной индекс `uq_site_profiles_domain_path_prefix` по `(domain, path_prefix)`.
-  - Метод `to_dict(include_instructions=False)`: Сериализует в словарь. Если `include_instructions=True`, добавляет `instructions_json` и `previous_instructions_json`.
 
-- `Job` (расширенная модель):
-  - Новые поля: `profile_id` (FK на `site_profiles`, `ondelete="SET NULL"`), `block_reason` (TEXT NULL), `human_requested_at` (DATETIME NULL).
-  - Поля режимов парсинга: `parse_mode` (`"fast"` | `"smart"`, дефолт `"fast"`), `max_pages` (страницы/итерации, дефолт `1`), `max_child_profiles` (лимит новых detail-профилей за запуск, дефолт `20`), `max_detail_pages` (лимит переходов на detail-страницы, дефолт `100`). Верхнего ограничения для двух пользовательских лимитов нет; допускаются целые значения от `1`. 
-  - Связь `profile = relationship("SiteProfile")`.
-  - `to_dict()` возвращает новые поля.
+**SiteProfile (новая модель, таблица `site_profiles`):**
+Поля: `id`, `domain` (индекс), `path_prefix`, `instructions_json` (TEXT), `previous_instructions_json` (TEXT NULL), `version` (INT), `is_active` (BOOL), `fail_count` (INT), `retry_not_before` (DATETIME NULL), `last_success_at`, `last_failure_at`, `last_error` (TEXT NULL), `created_at`, `updated_at`.
 
-- `ChildProfile` (новая модель, таблица `child_profiles`):
-  - **Назначение:** Хранит отдельную JSON-инструкцию для detail-страниц карточек в умном режиме, связанную с родительским `SiteProfile`. Не смешивает листинговую и detail-схемы.
-  - Поля: `id`, `parent_profile_id` (FK на `site_profiles`, `ondelete="CASCADE"`, индекс), `domain`, `path_prefix`, `instructions_json` (TEXT), `version` (INT), `is_active` (BOOL), `created_at`, `updated_at`.
-  - Уникальный составной индекс `uq_child_profiles_parent_domain_path` по `(parent_profile_id, domain, path_prefix)` — предотвращает создание дублирующих дочерних профилей.
-  - Связь `parent_profile = relationship("SiteProfile", backref="child_profiles")` с `cascade="all, delete-orphan"` (при удалении родителя удаляются дочерние).
+Уникальный составной индекс `uq_site_profiles_domain_path_prefix` по `(domain, path_prefix)`.
+
+Метод `to_dict(include_instructions=False)`: Сериализует в словарь.
+
+**Job (расширенная модель):**
+Новые поля: `profile_id` (FK на `site_profiles`, `ondelete="SET NULL"`), `block_reason` (TEXT NULL), `human_requested_at` (DATETIME NULL).
+
+Поля режимов парсинга: `parse_mode` (`"fast"` | `"smart"`, дефолт `"fast"`), `max_pages` (страницы/итерации, дефолт `1`), `max_child_profiles` (лимит новых detail-профилей за запуск, дефолт `20`), `max_detail_pages` (лимит переходов на detail-страницы, дефолт `100`).
+
+Связь `profile = relationship("SiteProfile")`.
+
+**ChildProfile (новая модель, таблица `child_profiles`):**
+Поля: `id`, `parent_profile_id` (FK на `site_profiles`, `ondelete="CASCADE"`, индекс), `domain`, `path_prefix`, `instructions_json` (TEXT), `version` (INT), `is_active` (BOOL), `created_at`, `updated_at`.
+
+Уникальный составной индекс `uq_child_profiles_parent_domain_path` по `(parent_profile_id, domain, path_prefix)`.
+
+Связь `parent_profile = relationship("SiteProfile", backref="child_profiles")` с `cascade="all, delete-orphan"`.
 
 **Функции без изменений:**
+`add_log`, `set_job_status`, `save_parsed_item` — без изменений.
 
-- `add_log`, `set_job_status`, `save_parsed_item` — без изменений.
-
-#### 8. `parser.py` (СИЛЬНО ИЗМЕНЁННЫЙ)
+#### 9. `parser.py` (СИЛЬНО ИЗМЕНЁННЫЙ)
 
 Ядро бизнес-логики — универсальный executor парсинга по JSON-инструкции из `SiteProfile`.
 
 **Новые импорты:**
-
 - `import json` (для парсинга `instructions_json`).
 - `import analyzer` (для запуска анализатора).
 - `import notifier` (для Telegram-уведомлений).
@@ -270,304 +331,194 @@ SiteProfile (листинг: news.ycombinator.com/)
 - `from models import utcnow` (для `human_requested_at`).
 
 **Новые константы:**
-
-- `CLOUDFLARE_MARKERS`: Список маркеров Cloudflare (`"cloudflare"`, `"ray id"`, `"checking your browser"`, `"ddos protection"`).
-- `DEFAULT_AUTH_MARKERS`: Дефолтные маркеры авторизации (`"sign in"`, `"log in"`, `"login"`, `"create account"`, `"register"`, `"please sign in"`).
+- `CLOUDFLARE_MARKERS`: Список маркеров Cloudflare.
+- `DEFAULT_AUTH_MARKERS`: Дефолтные маркеры авторизации.
 
 **Новые функции:**
-
-- `_classify_block(page)`: Классифицирует тип блока. Возвращает `(is_blocked, block_reason, marker)`, где `block_reason` может быть `"captcha"`, `"cloudflare"`, `None`.
-- `_check_auth_required(page, instruction)`: Проверяет, требует ли страница авторизации. Логика: если карточек нет И страница содержит `auth_markers` (из инструкции или `DEFAULT_AUTH_MARKERS`) → `True`.
-- `_wait_human(app, page, job_id, target_url, domain, block_reason, instruction=None)`: Ожидание действия человека. Заменяет старую `_wait_captcha`. Логика:
-  1. Переводит задачу в `WAITING_HUMAN`, ставит `block_reason`, `human_requested_at`.
-  2. Вызывает `notifier.notify_human_required`.
-  3. Ждёт до `HUMAN_WAIT_SECONDS`, опрашивая страницу каждые `CAPTCHA_POLL_SECONDS`.
-  4. Для `auth_required`: проверяет `_check_auth_required(page, instruction)`.
-  5. Для `captcha`/`cloudflare`: проверяет `_classify_block(page)`.
-  6. Если проблема исчезла — переводит задачу в `RUNNING`, возвращает `True`.
-  7. Если таймаут — возвращает `False`.
-  8. В `finally` вызывает `notifier.mark_human_episode_finished`.
-
-- `_validate_page(page, instruction, job_id)`: Валидирует страницу по правилам из инструкции. Возвращает `(is_valid, error_message, cards_count)`. Проверяет: `card_selector` даёт не менее `validation.min_cards_first_page` карточек, на первых до 5 карточках проверяет `title_selector`/`link_selector` с учётом допустимых долей пустых значений.
+- `_classify_block(page)`: Классифицирует тип блока.
+- `_check_auth_required(page, instruction)`: Проверяет, требует ли страница авторизации.
+- `_wait_human(app, page, job_id, target_url, domain, block_reason, instruction=None)`: Ожидание действия человека.
+- `_validate_page(page, instruction, job_id)`: Валидирует страницу по правилам из инструкции.
 
 **Новые функции (умный режим / дочерние профили):**
+- `find_best_child_profile(parent_profile_id, domain, path)`: Ищет подходящий `ChildProfile` для detail-URL.
+- `_extract_child_text(detail_page, instruction)`: Извлекает текст detail-страницы по схеме child-инструкции.
 
-- `find_best_child_profile(parent_profile_id, domain, path)`: Ищет подходящий `ChildProfile` для detail-URL. Ограничивает поиск дочерними профилями конкретного родителя и домена, приводит `path_prefix` к каноническому виду через `normalize_path_prefix`. Подходит, если префикс совпадает точно, является префиксом + `/`, либо равен `/`. Из подходящих выбирает самый длинный `path_prefix` (наиболее специфичный). Возвращает `None`, если профиля нет.
-- `_extract_child_text(detail_page, instruction)`: Извлекает текст detail-страницы по схеме child-инструкции: `detail.title_selector`, затем `detail.text_selectors` и `detail.fallback_selectors`. Собирает разделы через `\n\n` и удаляет дубликаты. Обёрнут в try/except, чтобы сбой одного селектора не ломал извлечение.
-- Обработка detail-карточки в smart-режиме:
-  1. Открывается detail URL по ссылке карточки (после паузы `random.uniform(1.5, 3.5)`).
-  2. Используется **итоговый URL** после редиректов (`detail_page.url`).
-  3. `find_best_child_profile` ищет существующий дочерний профиль. Если найден — загружается его `instructions_json`, LLM **не вызывается повторно**.
-  4. Если не найден — вызывается `analyzer.analyze_and_create_child_profile`, сохраняется новый `ChildProfile` для родителя, `new_child_profiles += 1`.
-  5. `_extract_child_text` извлекает detail-текст, который добавляется в `ParsedItem.raw_text` после `--- описание ---`.
-  6. В `ParsedItem.url` в smart-режиме сохраняется итоговый URL detail-страницы.
-- **Лимиты в smart-режиме:** при достижении `SMART_MAX_DETAIL_PAGES` переходы прекращаются (карточки сохраняются как есть); при достижении `job.max_child_profiles` новых дочерних профилей выбрасывается `RuntimeError` и остальные карточки сохраняются без detail-текста.
+**Обработка detail-карточки в smart-режиме:**
+- Открывается detail URL по ссылке карточки.
+- `find_best_child_profile` ищет существующий дочерний профиль.
+- Если найден — загружается его `instructions_json`, LLM не вызывается повторно.
+- Если не найден — вызывается `analyzer.analyze_and_create_child_profile`.
+- `_extract_child_text` извлекает detail-текст.
 
 **Изменённая функция `run_universal_parser`:**
-
-- **Шаг 0: Чтение режима и лимитов из Job.** Читает `job.parse_mode` (`fast`/`smart`) и `job.max_pages`, `job.max_child_profiles`. `fast` = только листинг, `smart` = дополнительно переходы на detail-страницы карточек. Лимит страниц из Job имеет приоритет над `stop_conditions.max_pages` из LLM-инструкции.
-
-- **Шаг 1: Нормализация и поиск профиля.** Вызывает `normalize_target_url` и `find_best_profile`.
-- **Шаг 2: Если профиля нет или он неактивен.** Если `profile is None` → вызывает `analyzer.analyze_and_create_profile`. Если `not profile.is_active` → проверяет кулдаун `retry_not_before`; если прошёл → вызывает `analyzer.regenerate_profile`.
-- **Шаг 3: Загрузка инструкции.** Парсит `profile.instructions_json`, проверяет `schema_version=1`.
-- **Шаг 4: Классификация ошибок (фаза 4).** На каждой странице:
-  1. `_classify_block(page)` → если блок → `_wait_human`.
-  2. `_check_auth_required(page, instruction)` → если `auth_required` → `_wait_human`.
-  3. `_validate_page(page, instruction)` → если структурный сбой → **самолечение**: вызывает `analyzer.regenerate_profile`, один ретрай исполнения; при повторном сбое — откат на `previous_instructions_json`.
-- **Шаг 5: Исполнение.** Извлекает карточки по `card_selector`, поля по `fields`, дедуплицирует по `seen_urls`. Если `detail.enabled` → проваливается в карточку.
-- **Шаг 6: Пагинация.** Поддерживает стратегии `html_fragment_url`, `query_param_page`, `none`. Остальные (`next_button`, `load_more`, `infinite_scroll`) распознаются, но не реализованы (падают с ясным логом).
-- **Шаг 7: Успех.** Обновляет `profile.last_success_at`, `fail_count=0`, `is_active=True`.
+- Шаг 0: Чтение режима и лимитов из Job.
+- Шаг 1: Нормализация и поиск профиля.
+- Шаг 2: Если профиля нет или он неактивен.
+- Шаг 3: Загрузка инструкции.
+- Шаг 4: Классификация ошибок (фаза 4).
+- Шаг 5: Исполнение.
+- Шаг 6: Пагинация.
+- Шаг 7: Успех.
 
 **Функция `run_f6s_parser`:**
+Сохранена как тонкая обёртка: просто вызывает `run_universal_parser`.
 
-- Сохранена как тонкая обёртка: просто вызывает `run_universal_parser`. Это обеспечивает обратную совместимость с `app.py`.
-
-#### 9. `app.py` (ИЗМЕНЁННЫЙ)
+#### 10. `app.py` (ИЗМЕНЁННЫЙ)
 
 **Новые импорты:**
-
 - `import config` (вместо хардкода `SQLALCHEMY_DATABASE_URI`).
 - `from models import SiteProfile` (для эндпоинтов профилей).
 - `from url_utils import normalize_path_prefix` (для построения URL rescan).
 - `import analyzer` (для запуска пересканирования).
 
 **Изменения в инициализации:**
-
 - `app.config["SQLALCHEMY_DATABASE_URI"]` берётся из `config.SQLALCHEMY_DATABASE_URI`.
-- Добавлена функция `_migrate_sqlite_schema()`: Идемпотентная lightweight-миграция для существующей SQLite-базы. Добавляет колонки `profile_id`, `block_reason`, `human_requested_at`, `parse_mode`, `max_pages`, `max_child_profiles` в таблицу `jobs` через `ALTER TABLE ADD COLUMN`. Создаёт индексы.
-- `ensure_f6s_seed_profile()` вызывается после `db.create_all()` для создания seed-профиля F6S.
+- Добавлена функция `_migrate_sqlite_schema()`: Идемпотентная lightweight-миграция.
+- `ensure_f6s_seed_profile()` вызывается после `db.create_all()`.
 - Стартовая очистка расширяется: `JobStatus.WAITING_HUMAN` тоже помечается `FAILED` при старте сервера.
 
 **Новые REST API Эндпоинты (Profiles API):**
-
-- `GET /api/profiles`:
-  - **Описание**: Возвращает список всех профилей сайтов.
-  - **Логика**: `SiteProfile.query.order_by(updated_at.desc().nullslast(), id.desc())`. Инструкции не возвращаются по умолчанию (`include_instructions=False`).
-  - **Возвращает**: Массив объектов `{id, domain, path_prefix, version, is_active, fail_count, retry_not_before, last_success_at, last_failure_at, last_error, created_at, updated_at}`.
-
-- `GET /api/profiles/<int:profile_id>`:
-  - **Описание**: Возвращает один профиль, включая `instructions_json`.
-  - **Логика**: `db.session.get(SiteProfile, profile_id)`. Если не найдено — 404.
-  - **Возвращает**: Объект с `include_instructions=True`.
-
-- `DELETE /api/profiles/<int:profile_id>`:
-  - **Описание**: Удаляет профиль сайта.
-  - **Логика**: Благодаря `ondelete="SET NULL"` в `models.py`, привязанные jobs остаются в базе, но теряют ссылку на профиль. Следующий запуск парсера по URL этого домена снова запустит analyzer.
-  - **Возвращает**: `{deleted: 1, domain, path_prefix}`.
-
-- `POST /api/profiles/<int:profile_id>/rescan`:
-  - **Описание**: Принудительное пересканирование профиля.
-  - **Логика**:
-    1. Сбрасывает кулдаун (`retry_not_before = None`).
-    2. Помечает профиль как неактивный (`is_active = False`, `last_error = "Запрошено принудительное пересканирование"`).
-    3. Создаёт служебный job со статусом `PENDING`, `target_url = "https://{domain}{path_prefix}"`.
-    4. Запускает `_run_rescan` в фоне (отдельный поток).
-    5. Возвращает `job_id`, чтобы пользователь мог следить за логами.
-  - **Фоновая задача `_run_rescan`**:
-    - Ставит статус `RUNNING`.
-    - Логирует "Запущено принудительное пересканирование профиля #N".
-    - Нормализует URL.
-    - Удаляет старый профиль.
-    - Вызывает `analyzer.analyze_and_create_profile`.
-    - При успехе — статус `COMPLETED`, лог "Создан профиль #M vK".
-    - При ошибке — статус `FAILED`, лог с причиной.
-  - **Возвращает**: `{ok: True, job_id, profile_id, domain, path_prefix}` с HTTP 202.
+- `GET /api/profiles`: Возвращает список всех профилей сайтов.
+- `GET /api/profiles/<int:profile_id>`: Возвращает один профиль, включая `instructions_json`.
+- `DELETE /api/profiles/<int:profile_id>`: Удаляет профиль сайта.
+- `POST /api/profiles/<int:profile_id>/rescan`: Принудительное пересканирование профиля.
 
 **Существующие эндпоинты без изменений:**
+`GET /api/jobs`, `GET /api/jobs/<id>/logs`, `GET /api/items`, `DELETE /api/jobs`, `DELETE /api/jobs/<id>`.
 
-- `GET /api/jobs`, `GET /api/jobs/<id>/logs`, `GET /api/items`, `DELETE /api/jobs`, `DELETE /api/jobs/<id>`.
+**POST /api/parse (ИЗМЕНЁН):**
+Описание: Создаёт задачу и запускает парсер. Принимает JSON `{url, iterations, mode, maxChildProfiles}`.
 
-**`POST /api/parse` (ИЗМЕНЁН)**:
-
-- **Описание**: Создаёт задачу и запускает парсер. Принимает JSON `{url, iterations, mode, maxChildProfiles}`.
-- **Логика**:
-  - `iterations` → `Job.max_pages` (количество страниц/итераций; проверка: целое от 1 до 100).
-  - `mode` → `Job.parse_mode`: `"fast"` (только листинг) или `"smart"` (переходы на detail-страницы карточек); другие значения отклоняются.
-  - `maxChildProfiles` → `Job.max_child_profiles` (пользовательский лимит новых дочерних профилей за запуск; проверка: целое от 1 до 500). Используется в умном режиме, имеет приоритет над константой `SMART_MAX_NEW_CHILD_PROFILES`.
-  - URL нормализуется через `normalize_target_url`, затем запускается worker в фоновом потоке.
-
-#### 10. `save_auth.py`
-
+#### 11. `save_auth.py`
 Без изменений.
 
-#### 11. `start_chrome.command`
-
+#### 12. `start_chrome.command`
 Без изменений.
+
+---
 
 ## Frontend
 
 Фронтенд реализован на связке React + Vite. Используется современный подход с функциональными компонентами, хуками и React Router v6. Дизайн реализован локально (через теги `<style>` в компонентах и ванильный CSS с префиксами) с использованием собственной дизайн-системы, вдохновленной терминальной эстетикой.
 
 ### Конфигурация Frontend (корень `frontend/`)
-
 Без изменений.
 
 ### Структура директории `frontend/src/`
 
 #### 1. `main.jsx`
-
 Без изменений.
 
 #### 2. `App.jsx` (ИЗМЕНЁННЫЙ)
-
 **Новый импорт:**
-
 - `import Profiles from "./pages/Profiles"`.
 
 **Новый маршрут:**
-
 - `<Route path="/profiles" element={<Profiles />} />`.
 
 **Новая ссылка в топбаре:**
-
 - `<NavLink to="/profiles">` с индексом `04` и текстом "Профили".
 
 #### 3. `api.js` (ИЗМЕНЁННЫЙ)
-
 **Новые функции API:**
-
 - `fetchProfiles()`: `GET /profiles` — список всех профилей сайтов.
 - `rescanProfile(profileId)`: `POST /profiles/{id}/rescan` — принудительное пересканирование профиля.
 - `deleteProfile(profileId)`: `DELETE /profiles/{id}` — удаление профиля.
 
-**Существующие функции без изменений (но сигнатура `startParse` расширена):**
-
-- `fetchJobs`, `fetchJobLogs`, `fetchItems`, `deleteJob`, `deleteAllJobs`.
-
 **Изменённая `startParse(url, options = {})`:**
-
-- Теперь принимает второй аргумент `options`:
-  - `options.iterations` → `iterations` (JSON); дефолт `1`.
-  - `options.mode` → `mode` (JSON); дефолт `"fast"`.
-  - `options.maxChildProfiles` → `maxChildProfiles` (JSON); дефолт `20`.
-- Выполняет `POST /parse` с полным телом `{url, iterations, mode, maxChildProfiles}`.
+Теперь принимает второй аргумент `options`:
+- `options.iterations` → `iterations` (JSON); дефолт `1`.
+- `options.mode` → `mode` (JSON); дефолт `"fast"`.
+- `options.maxChildProfiles` → `maxChildProfiles` (JSON); дефолт `20`.
 
 #### Папка `pages/`
 
-#### 4. `Dashboard.jsx` (ИЗМЕНЁННЫЙ)
-
+##### 4. `Dashboard.jsx` (ИЗМЕНЁННЫЙ)
 **Новые состояния (State):**
-
 - `iterations` (дефолт `1`): количество страниц/итераций.
 - `mode` (дефолт `"fast"`): выбранный режим парсинга (`fast`/`smart`).
 - `maxChildProfiles` (дефолт `20`): лимит новых detail-профилей для умного режима.
 
 **Изменения в `handleLaunch`:**
-
 - Валидирует `iterations` (целое от 1 до 100).
 - Валидирует `maxChildProfiles` (целое от 1 до 500).
 - Вызывает `startParse(target, {iterations: pageCount, mode, maxChildProfiles: childLimit})`.
 
 **Новый UI в консоли запуска (форма):**
-
 - Поле «Итерации» (числовой инпут, `min=1`, `max=100`) — количество страниц.
 - Поле «Лимит профилей» (числовой инпут, `min=1`, `max=500`) — видно только в умном режиме (`mode === "smart"`).
-- Переключатель «Режим»: радио «Быстрый» (`fast`) и «Умный» (`smart`). Подпись подсказки зависит от режима:
-  - `smart`: «Переходит в карточки и запоминает структуры detail-страниц.»
-  - `fast`: «Собирает только карточки листинга.»
-- Новые CSS-классы: `.gd-options`, `.gd-option-field`, `.gd-mode-field`, `.gd-number-input`, `.gd-mode-choice`, `.gd-mode-help`.
+- Переключатель «Режим»: радио «Быстрый» (`fast`) и «Умный» (`smart`).
+
+**Новые CSS-классы:** `.gd-options`, `.gd-option-field`, `.gd-mode-field`, `.gd-number-input`, `.gd-mode-choice`, `.gd-mode-help`.
 
 **Изменения в `STATUS_META`:**
-
 - Добавлен статус `waiting_human`: `{label: "Ожидание", dot: "gd-dot--waiting"}`.
 
-**Изменения в текстах:**
-
-- `PLACEHOLDER`: `"https://www.f6s.com/events"` → `"https://example.com/listing"`.
-- Текст ошибки: `"Вставьте ссылку на страницу F6S."` → `"Вставьте ссылку на страницу."`.
-- `aria-label` инпута: `"Ссылка на страницу F6S"` → `"Ссылка на страницу"`.
-- Lead-текст: "Вставь ссылку на листинг грантов, акселераторов или ивентов..." → "Вставь ссылку на любую страницу с карточками — бэкенд проанализирует сайт, создаст профиль и начнёт парсинг...".
-
-**Новые CSS-классы:**
-
-- `.gd-dot--waiting`: Янтарная точка (`#e0c060`) с пульсацией (`gd-pulse`).
-- `.gd-badge--waiting_human`: Янтарный бейдж с полупрозрачным фоном.
-
-#### 5. `LogsPage.jsx` (ИЗМЕНЁННЫЙ)
-
+##### 5. `LogsPage.jsx` (ИЗМЕНЁННЫЙ)
 **Изменения в `STATUS_META`:**
-
 - Добавлен статус `waiting_human`: `{label: "Ожидание", dot: "gl-dot--waiting"}`.
 
 **Новые CSS-классы:**
-
 - `.gl-dot--waiting`: Янтарная точка с пульсацией (`gl-pulse`).
 - `.gl-statusbar--waiting_human`: Янтарный бордер статус-бара.
-- `.gl-waiting-banner`: Баннер ожидания действия человека. Стиль: янтарный фон (`rgba(224, 192, 96, 0.12)`), янтарный бордер, анимация пульсации (`gl-wait-pulse`).
+- `.gl-waiting-banner`: Баннер ожидания действия человека.
 - `.gl-waiting-icon`, `.gl-waiting-text`: Стили для содержимого баннера.
 
 **Новый UI-элемент:**
+Баннер ожидания: Рендерится при `status === "waiting_human"`. Содержит иконку `⏸` и текст:
+- Для `block_reason === "auth_required"`: "Требуется авторизация в окне Chrome".
+- Иначе: "Требуется решение капчи или обход блока".
 
-- Баннер ожидания: Рендерится при `status === "waiting_human"`. Содержит иконку `⏸` и текст:
-  - Для `block_reason === "auth_required"`: "Требуется авторизация в окне Chrome".
-  - Иначе: "Требуется решение капчи или обход блока".
-
-#### 6. `Profiles.jsx` (НОВАЯ СТРАНИЦА)
-
+##### 6. `Profiles.jsx` (НОВАЯ СТРАНИЦА)
 **Состояние (State):**
-
 - `profiles`: Массив объектов `SiteProfile`.
 - `loading`: Флаг загрузки.
 - `error`: Текст ошибки.
 - `rescanning`: `Set` ID профилей, которые сейчас пересканируются.
 
 **Логика:**
-
 - `loadProfiles()`: Вызывает `fetchProfiles()`, обновляет `profiles`.
-- `handleRescan(profileId)`: Вызывает `rescanProfile(profileId)`, добавляет `profileId` в `rescanning`. При успехе делает `navigate(/logs/${result.job_id})` для слежения за прогрессом. В `finally` удаляет `profileId` из `rescanning`.
-- `handleDelete(profileId, domain, pathPrefix)`: Запрашивает подтверждение (`window.confirm`), вызывает `deleteProfile(profileId)`, перезагружает список.
+- `handleRescan(profileId)`: Вызывает `rescanProfile(profileId)`, добавляет `profileId` в `rescanning`.
+- `handleDelete(profileId, domain, pathPrefix)`: Запрашивает подтверждение, вызывает `deleteProfile(profileId)`, перезагружает список.
 
 **UI:**
-
-- Шапка: Kicker "profiles · управление сайтами", заголовок "Профили сайтов", lead-текст о назначении профилей.
+- Шапка: Kicker "profiles · управление сайтами", заголовок "Профили сайтов".
 - Тулбар: Кнопка "↻ обновить" для перезагрузки списка.
-- Таблица профилей:
-  - Колонки: ID, Домен, Путь, Версия, Статус, Ошибок, Обновлено, Действия.
-  - Статус: Бейдж с цветом:
-    - `is_active=true` → "Активен" (бирюзовый).
-    - `is_active=false` + `retry_not_before > now` → "На кулдауне" (янтарный).
-    - `is_active=false` + кулдаун прошёл → "Сломан" (красный).
-  - Действия:
-    - Кнопка "Пересканировать" (янтарная): Запускает rescan, показывает "⟳…" при загрузке.
-    - Кнопка "Удалить" (серая): Удаляет профиль после подтверждения.
+- Таблица профилей с колонками: ID, Домен, Путь, Версия, Статус, Ошибок, Обновлено, Действия.
 
 **CSS (префикс `gx-`):**
-
 - `.gx-page`, `.gx-head`, `.gx-kicker`, `.gx-title`, `.gx-lead`: Стили шапки.
 - `.gx-toolbar`, `.gx-refresh`: Тулбар с кнопкой обновления.
 - `.gx-table-wrap`, `.gx-table`, `.gx-cell`: Таблица профилей.
 - `.gx-badge`, `.gx-badge--active`, `.gx-badge--broken`, `.gx-badge--cooldown`: Бейджи статуса.
 - `.gx-btn`, `.gx-btn-rescan`, `.gx-btn-delete`: Кнопки действий.
 
-#### 7. `Results.jsx`
-
+##### 7. `Results.jsx`
 Без изменений.
 
 ### Утилитарные функции компонентов React (Helpers)
-
 Без изменений.
 
-## Дизайн-система и Визуальный Стиль
-
+### Дизайн-система и Визуальный Стиль
 Без изменений. Все новые элементы используют существующие CSS-переменные (`--gt-amber`, `--gt-teal`, `--gt-ink`, `--gt-line`) и префиксы (`gd-`, `gl-`, `gx-`).
+
+---
 
 ## Среда разработки и Контекст для ИИ-агентов (Dev Environment & Rules)
 
 ### 1. Как запускать проект (Локальная среда)
 
-Для полноценной работы проекта нужны **три терминала** (для Chrome, бекенда и фронтенда соответственно).
+Для полноценной работы проекта нужны три терминала (для Chrome, бекенда и фронтенда соответственно).
 
-#### Терминал 1: Chrome с CDP (обязательно для парсинга)
-
+**Терминал 1: Chrome с CDP (обязательно для парсинга)**
 ```bash
 cd backend
 ./start_chrome.command
 ```
+Это запустит изолированный Chrome с портом отладки `9222`. Держите окно открытым — парсер подключается к нему через CDP.
 
-Это запустит изолированный Chrome с портом отладки `9222`. **Держите окно открытым** — парсер подключается к нему через CDP.
-
-#### Терминал 2: Backend (Flask)
-
+**Терминал 2: Backend (Flask)**
 ```bash
 cd backend
 
@@ -581,7 +532,7 @@ pip install -r requirements.txt
 # Создаём .env файл (если ещё нет)
 cp .env.example .env
 
-# Редактируем .env (добавляем LLM_API_KEY для анализа новых сайтов)
+# Редактируем .env (добавляем LLM_API_KEYS для анализа новых сайтов)
 nano .env  # Или любой другой редактор
 
 # Запускаем бекенд
@@ -591,15 +542,13 @@ python app.py
 Бекенд запустится на `http://localhost:5000`.
 
 **Что происходит при старте:**
+- Загружается `.env` через `python-dotenv`.
+- Создаются таблицы в SQLite (`db.create_all()`).
+- Выполняется lightweight-миграция (добавление новых колонок в `jobs`).
+- Создаётся seed-профиль F6S (если его нет).
+- Зависшие задачи (`PENDING`, `RUNNING`, `WAITING_HUMAN`) помечаются как `FAILED`.
 
-1. Загружается `.env` через `python-dotenv`.
-2. Создаются таблицы в SQLite (`db.create_all()`).
-3. Выполняется lightweight-миграция (добавление новых колонок в `jobs`).
-4. Создаётся seed-профиль F6S (если его нет).
-5. Зависшие задачи (`PENDING`, `RUNNING`, `WAITING_HUMAN`) помечаются как `FAILED`.
-
-#### Терминал 3: Frontend (Vite + React)
-
+**Терминал 3: Frontend (Vite + React)**
 ```bash
 cd frontend
 
@@ -639,11 +588,37 @@ PUBLIC_BROWSER_URL=
 # Сколько ждать действия человека при капче/авторизации (секунды)
 HUMAN_WAIT_SECONDS=600
 
+# =========================================
 # LLM для analyzer (обязательно для анализа новых сайтов)
-# Без этого парсер будет работать только с seed-профилем F6S
-LLM_API_KEY=sk-...
+# =========================================
+#
+# Пул API-ключей (рекомендуется):
+# Перечисли ключи через запятую. Если первый ключ упрётся
+# в дневной лимит, приложение автоматически возьмёт следующий.
+# Минутные лимиты (RPM/TPM) держатся в памяти процесса.
+# При 429 от провайдера ключ получает временный cooldown.
+LLM_API_KEYS=sk-first,sk-second,sk-third
+
+# Одиночный ключ (устарело, оставлено для обратной совместимости).
+# Если LLM_API_KEYS задан, этот параметр игнорируется.
+LLM_API_KEY=
+
 LLM_MODEL=gpt-4o-mini
 LLM_BASE_URL=https://api.openai.com/v1
+
+# Лимиты для ОДНОГО LLM-ключа.
+# При достижении RPM/TPM ключ уходит в короткий cooldown (5–60 сек).
+# При достижении DAILY ключ блокируется до 00:00 UTC и включается следующий.
+# 15 запросов в минуту
+LLM_RPM_LIMIT=15
+# 250 000 токенов в минуту
+LLM_TPM_LIMIT=250000
+# 500 запросов в день
+LLM_DAILY_REQUEST_LIMIT=500
+
+# Сколько секунд ждать освобождения ключа, если все ключи
+# временно упёрлись в минутные лимиты. По умолчанию 120.
+LLM_KEY_WAIT_SECONDS=120
 
 # Analyzer limits
 ANALYZER_MAX_DOM_CHARS=200000
@@ -654,10 +629,11 @@ PROFILE_RESCAN_COOLDOWN_SECONDS=3600
 ```
 
 **Важно:**
-
-- `LLM_API_KEY` обязателен для анализа новых сайтов. Без него парсер будет работать только с seed-профилем F6S.
-- `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` опциональны. Если пустые — уведомления выключены, но система продолжает работать (ждёт человека в Chrome, просто без Telegram).
-- **Никогда не коммитьте `.env` в git.** Добавьте его в `.gitignore`.
+- `LLM_API_KEYS` или `LLM_API_KEY` обязательны для анализа новых сайтов. Без них парсер будет работать только с seed-профилем F6S.
+- Рекомендуется использовать `LLM_API_KEYS` с несколькими ключами для ротации при достижении лимитов.
+- Минутные лимиты (RPM/TPM) хранятся в памяти процесса. Если запустишь несколько worker-процессов, понадобится общий storage (например Redis).
+- `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` опциональны. Если пустые — уведомления выключены, но система продолжает работать.
+- Никогда не коммитьте `.env` в git. Добавьте его в `.gitignore`.
 
 ### 3. Полный сценарий первого запуска
 
@@ -677,5 +653,67 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-nano .
+nano .env  # Добавляем LLM_API_KEYS
+
+# 4. Запускаем бекенд
+python app.py
+
+# 5. В третьем терминале настраиваем фронтенд
+cd frontend
+npm install
+npm run dev
 ```
+
+Открывай `http://localhost:5173` в браузере — и вперёд парсить гранты!
+
+---
+
+## Пул LLM API-ключей (детали реализации)
+
+### Как работает ротация ключей
+
+1. **Перед запросом**: `llm_client.chat_json` оценивает примерное потребление токенов через `_estimate_tokens()`.
+
+2. **Выбор ключа**: `llm_key_pool.acquire_key()` выбирает первый доступный ключ, у которого:
+   - дневной счётчик < `LLM_DAILY_REQUEST_LIMIT` (500 по умолчанию);
+   - нет дневной блокировки;
+   - нет активного минутного cooldown;
+   - RPM < `LLM_RPM_LIMIT` (15 по умолчанию);
+   - TPM позволяет запрос (< `LLM_TPM_LIMIT`, 250k по умолчанию).
+
+3. **Если все ключи упёрлись в минутные лимиты**: клиент ждёт до `LLM_KEY_WAIT_SECONDS` (120 по умолчанию), периодически проверяя доступность ключей.
+
+4. **Если все ключи упёрлись в дневной лимит**: поднимается `LlmDailyLimitError` без дальнейших попыток.
+
+5. **При HTTP 429 от провайдера**:
+   - **RPM/TPM** (временный лимит): ключ получает короткий cooldown 5–60 секунд, не считается сломанным.
+   - **daily/quota/insufficient** (дневной лимит): ключ блокируется до 00:00 UTC, включается следующий ключ.
+   - **401/402/403** (auth/billing): ключ блокируется как невалидный навсегда, включается следующий ключ.
+
+### Хранение состояния
+
+**Дневные счётчики** (в БД, таблица `llm_key_pool_state`):
+- `key_hash`: SHA-256 хеш ключа (первые 32 символа).
+- `key_mask`: Маскированный вид ключа (`sk-abc...xyz`).
+- `daily_date`: Текущая UTC-дата.
+- `daily_requests`: Количество запросов за сегодня.
+- `disabled_until`: Timestamp блокировки (0 если не заблокирован).
+- `last_error`: Текст последней ошибки.
+- `updated_at`: Timestamp последнего обновления.
+
+**Минутные лимиты** (в памяти процесса):
+- Скользящее окно 60 секунд для RPM (список timestamps запросов).
+- Скользящее окно 60 секунд для TPM (список пар `(timestamp, tokens)`).
+- `cooldown_until`: Timestamp временной блокировки.
+- `pending_tokens`: Зарезервированные токены для активных запросов.
+
+### Логирование и отладка
+
+При срабатывании лимитов в логах появляются сообщения:
+- `"LLM вернул HTTP 429 (лимит запросов в минуту)"` — RPM limit.
+- `"LLM вернул HTTP 429 (лимит токенов в минуту)"` — TPM limit.
+- `"LLM вернул HTTP 429 (дневной лимит/quota)"` — daily limit.
+- `"LLM ключ отклонён: HTTP 401"` — auth error.
+
+Для отладки можно добавить логирование в `llm_key_pool.acquire_key()` для отслеживания выбора ключей.
+
