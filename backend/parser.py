@@ -651,6 +651,35 @@ def run_universal_parser(app, job_id, target_url):
                             app, normalized, job_id
                         )
                         break
+                    except analyzer.AnalyzerBlockedError as e:
+                        # Страница за капчой/антиботом: задача ждёт человека.
+                        # Вкладка анализатора уже закрыта, открываем свою,
+                        # чтобы человек решал капчу на видимой странице.
+                        _add_log(job_id, LogLevel.WARNING, str(e))
+                        try:
+                            with sync_playwright() as p:
+                                br = p.chromium.connect_over_cdp(config.CDP_URL)
+                                ctx = br.contexts[0]
+                                human_page = ctx.new_page()
+                                human_page.goto(
+                                    normalized.original,
+                                    timeout=60000,
+                                    wait_until="domcontentloaded",
+                                )
+                        except Exception:
+                            pass
+                        if _wait_human(
+                            app, human_page, job_id,
+                            normalized.original, normalized.domain,
+                            e.reason, None,
+                        ):
+                            _add_log(
+                                job_id, LogLevel.INFO,
+                                "Блок снят, перезапускаю анализ страницы."
+                            )
+                            continue
+                        _set_job_status(job_id, JobStatus.FAILED)
+                        return
                     except analyzer.NoProfileCreatedError as e:
                         _add_log(job_id, LogLevel.ERROR, str(e))
                         _set_job_status(job_id, JobStatus.FAILED)

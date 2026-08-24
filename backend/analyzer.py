@@ -73,6 +73,53 @@ class NoProfileCreatedError(AnalyzerError):
     """LLM не смог создать валидную инструкцию."""
 
 
+class AnalyzerBlockedError(AnalyzerError):
+    """Страница закрыта антибот-защитой (капча или Cloudflare)."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"Страница заблокирована антибот-защитой ({reason}); "
+            f"требуется действие человека."
+        )
+        self.reason = reason
+
+
+# Маркеры антибот-защиты на целевой странице. Отправлять DOM капчи в LLM
+# бессмысленно — вместо этого поднимаем AnalyzerBlockedError, и парсер
+# переводит задачу в WAITING_HUMAN (Telegram + виртуальный экран).
+_BLOCK_MARKERS = [
+    "we think you might be a bot",
+    "checking your browser",
+    "checking to see if you",
+    "attention required",
+    "hcaptcha",
+    "i am human",
+]
+
+_CLOUDFLARE_MARKERS = [
+    "ray id",
+    "checking your browser",
+    "ddos protection",
+    "cf-chl-",
+    "challenge-platform",
+]
+
+
+def _detect_block(page) -> Optional[str]:
+    """Возвращает причину блока ('captcha'/'cloudflare') или None."""
+    try:
+        low = page.content().lower()
+    except Exception:
+        return None
+    for m in _CLOUDFLARE_MARKERS:
+        if m in low:
+            return "cloudflare"
+    for m in _BLOCK_MARKERS:
+        if m in low:
+            return "captcha"
+    return None
+
+
 @dataclass
 class NetworkObservation:
     url: str
@@ -273,6 +320,18 @@ def _collect_page_signals(
                 raise AnalyzerError(f"Не удалось загрузить целевую страницу: {exc}") from exc
 
             time.sleep(2.0)
+
+            # Антибот-проверка до сбора DOM: анализировать капчу бессмысленно.
+            # Даём защите время автоматически разрешиться (JS-challenge).
+            block_reason = _detect_block(page)
+            if block_reason:
+                for _ in range(4):
+                    time.sleep(3.0)
+                    block_reason = _detect_block(page)
+                    if not block_reason:
+                        break
+            if block_reason:
+                raise AnalyzerBlockedError(block_reason)
 
             # Короткие прокрутки для обнаружения ленивой пагинации
             for _ in range(3):
