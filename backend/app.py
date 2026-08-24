@@ -37,10 +37,14 @@ app.config["SQLALCHEMY_DATABASE_URI"] = config.SQLALCHEMY_DATABASE_URI
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = config.SQLALCHEMY_TRACK_MODIFICATIONS
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MiB на тело запроса
 
-# Куки сессии: HttpOnly + SameSite=Lax; Secure — по конфигу/окружению.
+# Куки сессии: HttpOnly; SameSite зависит от режима: при кросс-сайт фронтенде
+# (GitHub Pages -> API-домен) нужен None, иначе куки не отправляются.
+# Secure — по конфигу/окружению (SameSite=None требует Secure=True).
 _SESSION_SECURE = config.SESSION_COOKIE_SECURE
 if _SESSION_SECURE == "auto":
     _SESSION_SECURE = str(config.SERVER_LOCATION == "vps").lower()
+
+_SAMESITE = "None" if _SESSION_SECURE == "true" else "Lax"
 
 # Фронтенд живёт на другом порту => другой origin. Для передачи сессионных
 # кук нужны точные origins (не "*") + supports_credentials.
@@ -243,7 +247,7 @@ def _set_auth_cookies(resp, session_token=None, csrf_token=None):
             session_token,
             max_age=auth_mod.SESSION_TTL_SECONDS,
             httponly=True,
-            samesite="Lax",
+            samesite=_SAMESITE,
             secure=secure,
             path="/",
         )
@@ -256,7 +260,7 @@ def _set_auth_cookies(resp, session_token=None, csrf_token=None):
             csrf_token,
             max_age=auth_mod.SESSION_TTL_SECONDS,
             httponly=False,
-            samesite="Lax",
+            samesite=_SAMESITE,
             secure=secure,
             path="/",
         )

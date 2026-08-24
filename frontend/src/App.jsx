@@ -8,6 +8,10 @@ import Catalog from "./pages/Catalog";
 import Login from "./pages/Login";
 import { api, logout } from "./api";
 
+// База путей роутера: на GitHub Pages приложение живёт в /<repo>/.
+// Vite прокидывает base через import.meta.env.BASE_URL.
+const ROUTER_BASENAME = import.meta.env.BASE_URL || "/";
+
 /**
  * Каркас админки Grantum.
  *
@@ -58,7 +62,7 @@ export default function App() {
   }
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <style>{shellCss}</style>
 
       {/* Амбиентный фон: два медленно дрейфующих цветовых пятна поверх базы. */}
