@@ -25,6 +25,7 @@ from url_utils import (
 )
 from seed_profiles import ensure_f6s_seed_profile
 import analyzer
+import notifier
 
 app = Flask(
     __name__,
@@ -57,6 +58,9 @@ CORS(
 )
 
 db.init_app(app)
+
+# Ссылка на приложение для notifier (контекст Flask при отправке уведомлений).
+config._flask_app = app
 
 
 @event.listens_for(Engine, "connect")
@@ -743,6 +747,11 @@ def rescan_profile(profile_id):
                     "Профиль не найден в БД (возможно, был удалён).",
                 )
                 _set_status(JobStatus.FAILED)
+                notifier.notify_runtime_error(
+                    scan_job_id,
+                    "пересканирование профиля",
+                    "Профиль не найден в БД (возможно, был удалён).",
+                )
                 return
 
             # Нормализуем URL для analyzer
@@ -757,6 +766,11 @@ def rescan_profile(profile_id):
                     f"Не удалось нормализовать URL профиля: {exc}",
                 )
                 _set_status(JobStatus.FAILED)
+                notifier.notify_runtime_error(
+                    scan_job_id,
+                    "пересканирование профиля",
+                    f"Не удалось нормализовать URL профиля: {exc}",
+                )
                 return
 
             # Сохраняем старую инструкцию
@@ -806,6 +820,11 @@ def rescan_profile(profile_id):
                 )
                 analyzer.mark_profile_failed(profile, str(exc))
                 _set_status(JobStatus.FAILED)
+                notifier.notify_runtime_error(
+                    scan_job_id,
+                    "пересканирование профиля",
+                    str(exc),
+                )
 
             except Exception as exc:
                 _db.session.rollback()
@@ -819,6 +838,11 @@ def rescan_profile(profile_id):
                 except Exception:
                     pass
                 _set_status(JobStatus.FAILED)
+                notifier.notify_runtime_error(
+                    scan_job_id,
+                    "пересканирование профиля",
+                    f"Критическая ошибка: {exc}",
+                )
 
     def _set_job_status_in_thread(job_id, status):
         """Безопасное обновление статуса job из потока."""

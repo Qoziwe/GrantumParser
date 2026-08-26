@@ -88,6 +88,10 @@ TELEGRAM_CHAT_ID = TELEGRAM_CHAT_IDS[0] if TELEGRAM_CHAT_IDS else ""
 PUBLIC_BROWSER_URL = _get_str("PUBLIC_BROWSER_URL", "")
 HUMAN_WAIT_SECONDS = _get_int("HUMAN_WAIT_SECONDS", 600)
 
+# Как часто (в секундах) слать в Telegram прогресс-уведомления о парсинге.
+# 0 — отключить прогресс-уведомления.
+PROGRESS_NOTIFY_EVERY_SECONDS = _get_int("PROGRESS_NOTIFY_EVERY_SECONDS", 120)
+
 _LLM_API_KEYS = _get_str_list("LLM_API_KEYS", "")
 _LLM_API_KEY = _get_str("LLM_API_KEY", "")
 

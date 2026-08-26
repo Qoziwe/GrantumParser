@@ -25,6 +25,261 @@ import config
 from models import add_log, LogLevel
 
 
+def _escape_html(text):
+    """Экранирование HTML-сущностей для parse_mode=HTML."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _send_text_html(text: str):
+    """Аналог _send_text, но с parse_mode=HTML (текст уже экранирован вызывающим)."""
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN.strip()}/sendMessage"
+
+    errors = []
+    delivered = False
+    for chat_id in config.TELEGRAM_CHAT_IDS:
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            if response.ok:
+                delivered = True
+            else:
+                errors.append(
+                    f"chat {chat_id}: HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+        except Exception as exc:
+            errors.append(f"chat {chat_id}: {exc}")
+
+    if not delivered:
+        raise RuntimeError("Telegram: " + "; ".join(errors)[:280])
+
+
+def _browser_link():
+    """Ссылка на виртуальный браузер (noVNC) или None."""
+    if config.PUBLIC_BROWSER_URL.strip():
+        return config.PUBLIC_BROWSER_URL.strip()
+    return None
+
+
+# Кулдаун для некритичных ошибок внутри работающего парсинга,
+# чтобы не заспамить чат при массовых сбоях.
+RUNTIME_ERROR_COOLDOWN_SECONDS = 120.0
+_runtime_error_last_sent = {}
+
+
+def notify_runtime_error(job_id, source, message):
+    """
+    Некритичная ошибка во время парсинга (карточка, detail-страница,
+    батч структурирования). Не более одного сообщения на задачу
+    за RUNTIME_ERROR_COOLDOWN_SECONDS.
+    """
+    now = time.time()
+    last = _runtime_error_last_sent.get(job_id, 0.0)
+    if now - last < RUNTIME_ERROR_COOLDOWN_SECONDS:
+        return False
+    _runtime_error_last_sent[job_id] = now
+
+    def build():
+        return (
+            "⚠️ <b>[Grantum] Ошибка во время парсинга</b>\n\n"
+            f"Задача: #{job_id}\n"
+            f"Источник: {_escape_html(source)}\n"
+            f"Ошибка: {_escape_html(str(message)[:400])}"
+        )
+
+    return _safe_lifecycle_send(job_id, build)
+
+
+def _safe_lifecycle_send(job_id, build_text_fn):
+    """
+    Общая обёртка: строит текст в контексте приложения,
+    отправляет во все чаты и пишет результат в лог задачи.
+
+    Ошибки отправки не роняют парсинг.
+    """
+    app = getattr(config, "_flask_app", None)
+
+    if not is_enabled():
+        return False
+
+    try:
+        if app is not None:
+            with app.app_context():
+                text = build_text_fn()
+        else:
+            text = build_text_fn()
+
+        _send_text_html(text)
+
+        try:
+            add_log(
+                job_id,
+                LogLevel.INFO,
+                "Telegram-уведомление (статус парсинга) отправлено."
+            )
+        except Exception:
+            pass
+        return True
+
+    except Exception as exc:
+        try:
+            add_log(
+                job_id,
+                LogLevel.WARNING,
+                f"Telegram-уведомление о статусе не отправлено: {exc}"
+            )
+        except Exception:
+            pass
+        return False
+
+
+def notify_parse_started(job_id, target_url, domain=None, parse_mode="fast"):
+    """
+    Уведомление о старте парсинга.
+    Содержит ссылку на виртуальный браузер (для vps).
+    """
+    def build():
+        mode_names = {
+            "fast": "быстрый (листинг)",
+            "smart": "умный (детальные страницы)",
+        }
+        mode = mode_names.get(parse_mode, parse_mode)
+
+        lines = [
+            "🚀 <b>[Grantum] Парсинг запущен</b>",
+            "",
+            f"Задача: #{job_id}",
+            f"Сайт: {_escape_html(target_url)}",
+            f"Режим: {_escape_html(mode)}",
+        ]
+
+        if domain:
+            lines.insert(3, f"Домен: {_escape_html(domain)}")
+
+        link = _browser_link()
+        if link:
+            lines += [
+                "",
+                f"🖥 Виртуальный браузер: {link}",
+            ]
+
+        return "\n".join(lines)
+
+    return _safe_lifecycle_send(job_id, build)
+
+
+def notify_progress(
+    job_id,
+    domain,
+    found_total,
+    saved_total,
+    pages_done,
+    detail_pages=0,
+    new_child_profiles=0,
+):
+    """
+    Прогресс-уведомление: сколько карточек найдено/сохранено.
+    Вызывается раз в PROGRESS_NOTIFY_EVERY_SECONDS.
+    """
+    def build():
+        parts = [
+            "📊 <b>[Grantum] Прогресс парсинга</b>",
+            "",
+            f"Задача: #{job_id}",
+            f"Сайт: {_escape_html(domain)}",
+            f"Страниц пройдено: {pages_done}",
+            f"Найдено карточек: {found_total}",
+            f"Сохранено карточек: {saved_total}",
+        ]
+        if detail_pages > 0:
+            parts.append(f"Детальных страниц открыто: {detail_pages}")
+        if new_child_profiles > 0:
+            parts.append(
+                f"Новых детальных профилей создано: {new_child_profiles}"
+            )
+        return "\n".join(parts)
+
+    return _safe_lifecycle_send(job_id, build)
+
+
+def notify_parse_finished(
+    job_id,
+    domain,
+    status,
+    saved_total,
+    found_total=0,
+    structured=0,
+    structuring_failed=0,
+    error_message=None,
+    duration_seconds=None,
+):
+    """
+    Финальное уведомление: успех / провал / ожидание человека.
+    """
+    def build():
+        icons = {
+            "completed": "✅",
+            "failed": "❌",
+            "waiting_human": "⏸",
+        }
+        titles = {
+            "completed": "Парсинг завершён",
+            "failed": "Парсинг завершился ошибкой",
+            "waiting_human": "Требуется человек",
+        }
+        icon = icons.get(status, "ℹ️")
+        title = titles.get(status, f"Статус: {status}")
+
+        def fmt_duration(seconds):
+            seconds = int(seconds or 0)
+            h, rem = divmod(seconds, 3600)
+            m, s = divmod(rem, 60)
+            if h:
+                return f"{h} ч {m} мин"
+            if m:
+                return f"{m} мин {s} сек"
+            return f"{s} сек"
+
+        lines = [
+            f"{icon} <b>[Grantum] {title}</b>",
+            "",
+            f"Задача: #{job_id}",
+            f"Сайт: {_escape_html(domain)}",
+            f"Сохранено карточек: {saved_total}",
+        ]
+        if found_total and found_total != saved_total:
+            lines.append(f"Найдено всего: {found_total}")
+        if structured or structuring_failed:
+            lines.append(
+                f"AI-структурирование: {structured} ок"
+                + (f", {structuring_failed} с ошибкой" if structuring_failed else "")
+            )
+        if duration_seconds:
+            lines.append(f"Длительность: {fmt_duration(duration_seconds)}")
+        if error_message:
+            lines += ["", f"Ошибка: {_escape_html(error_message[:300])}"]
+
+        link = _browser_link()
+        if status != "completed" and link:
+            lines += [
+                "",
+                f"🖥 Виртуальный браузер: {link}",
+            ]
+
+        return "\n".join(lines)
+
+    return _safe_lifecycle_send(job_id, build)
+
+
 GLOBAL_COOLDOWN_SECONDS = 60.0
 
 # Небольшое окно агрегации: если несколько задач одного домена

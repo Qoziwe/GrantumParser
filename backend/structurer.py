@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 
 import config
 import llm_client
+import notifier
 from models import db, ParsedItem, StructuringStatus, LogLevel
 
 
@@ -240,6 +241,11 @@ def structurize_batch(
         f"[Structurer] Все {max_retries} попыток исчерпаны для батча "
         f"из {len(batch)} карточек. Последняя ошибка: {last_error}"
     )
+    notifier.notify_runtime_error(
+        job_id,
+        "AI-структурирование батча",
+        f"Все {max_retries} попыток исчерпаны: {last_error}",
+    )
     return None
 
 
@@ -358,6 +364,11 @@ class StructuringWorker:
                     f"[Structurer] Критическая ошибка воркера: {e}\n"
                     f"{traceback.format_exc()}"
                 )
+                notifier.notify_runtime_error(
+                    self.job_id,
+                    "воркер AI-структурирования",
+                    str(e),
+                )
         finally:
             self._finished.set()
 
@@ -456,5 +467,10 @@ class StructuringWorker:
                     self.job_id, LogLevel.ERROR,
                     f"[Structurer] Ошибка обработки батча: {e}\n"
                     f"{traceback.format_exc()}"
+                )
+                notifier.notify_runtime_error(
+                    self.job_id,
+                    "AI-структурирование батча",
+                    str(e),
                 )
                 self._items_failed += len(item_ids)

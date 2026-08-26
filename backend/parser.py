@@ -80,6 +80,52 @@ def _set_job_status(job_id, status, total_found=None):
         db.session.rollback()
 
 
+def _cleanup_browser_tabs(job_id):
+    """
+    Очистка вкладок браузера после сессии парсинга.
+
+    Закрывает все вкладки во всех контекстах, оставляя одну пустую
+    (about:blank), чтобы вкладки не накапливались между сессиями.
+    """
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.connect_over_cdp(config.CDP_URL)
+            except Exception:
+                # Браузер уже закрыт/недоступен — чистить нечего.
+                return
+
+            pages = [pg for ctx in browser.contexts for pg in ctx.pages]
+            if not pages:
+                return
+
+            keeper, extras = pages[0], pages[1:]
+            closed = 0
+            for pg in extras:
+                try:
+                    pg.close()
+                    closed += 1
+                except Exception:
+                    pass
+
+            try:
+                if keeper.url != "about:blank":
+                    keeper.goto("about:blank", timeout=10000)
+            except Exception:
+                pass
+
+        _add_log(
+            job_id, LogLevel.INFO,
+            f"Очистка вкладок после сессии: закрыто {closed}, "
+            f"осталась одна пустая."
+        )
+    except Exception as e:
+        _add_log(
+            job_id, LogLevel.WARNING,
+            f"Очистка вкладок не удалась: {e}"
+        )
+
+
 def _classify_block(page):
     """
     Классифицирует тип блока.
@@ -559,18 +605,77 @@ def run_universal_parser(app, job_id, target_url):
         total_found = 0
         profile = None
         retry_after_heal = False  # Флаг для одного ретрая после самолечения
+        started_at = time.time()
+        last_progress_sent_at = 0.0
+        failure_notified = {"flag": False}
+        # Домен известен после нормализации URL; до этого — сырой URL.
+        site_label = target_url
+
+        def _fail(error_message):
+            """
+            Единственная точка завершения задачи с ошибкой:
+            лог + статус FAILED + Telegram-уведомление (ровно одно).
+            """
+            _add_log(job_id, LogLevel.ERROR, error_message)
+            _set_job_status(job_id, JobStatus.FAILED)
+            if not failure_notified["flag"]:
+                failure_notified["flag"] = True
+                notifier.notify_parse_finished(
+                    job_id,
+                    site_label,
+                    status="failed",
+                    saved_total=processed,
+                    found_total=total_found,
+                    error_message=error_message,
+                    duration_seconds=time.time() - started_at,
+                )
+
+        def _send_progress_if_due(pages_done, detail_pages=0,
+                                  new_child_profiles=0):
+            """Прогресс-уведомление в Telegram не чаще, чем раз в N секунд."""
+            nonlocal last_progress_sent_at
+            interval = config.PROGRESS_NOTIFY_EVERY_SECONDS
+            if interval <= 0:
+                return
+            now = time.time()
+            if now - last_progress_sent_at < interval:
+                return
+            last_progress_sent_at = now
+            notifier.notify_progress(
+                job_id,
+                normalized.domain if normalized else target_url,
+                found_total=total_found,
+                saved_total=processed,
+                pages_done=pages_done,
+                detail_pages=detail_pages,
+                new_child_profiles=new_child_profiles,
+            )
 
         try:
             _set_job_status(job_id, JobStatus.RUNNING)
             _add_log(job_id, LogLevel.INFO, f"Запуск парсера: {target_url}")
 
+            try:
+                job_row = db.session.get(Job, job_id)
+            except Exception:
+                job_row = None
+
+            notifier.notify_parse_started(
+                job_id,
+                target_url,
+                domain=None,
+                parse_mode=(job_row.parse_mode if job_row else "fast"),
+            )
+
             # 1. Нормализация и поиск профиля
+            normalized = None
             try:
                 normalized = normalize_target_url(target_url)
             except Exception as e:
-                _add_log(job_id, LogLevel.ERROR, f"Ошибка нормализации URL: {e}")
-                _set_job_status(job_id, JobStatus.FAILED)
+                _fail(f"Ошибка нормализации URL: {e}")
                 return
+
+            site_label = normalized.domain
 
             profile = find_best_profile(normalized)
 
@@ -617,11 +722,13 @@ def run_universal_parser(app, job_id, target_url):
                                 "Блок снят, перезапускаю анализ страницы."
                             )
                             continue
-                        _set_job_status(job_id, JobStatus.FAILED)
+                        _fail(
+                            f"Блок ({e.reason}) не решён человеком за отведённое "
+                            f"время. Сайт: {normalized.domain}"
+                        )
                         return
                     except analyzer.NoProfileCreatedError as e:
-                        _add_log(job_id, LogLevel.ERROR, str(e))
-                        _set_job_status(job_id, JobStatus.FAILED)
+                        _fail(f"Анализатор не создал профиль: {e}")
                         return
                     except analyzer.AnalyzerError as e:
                         _add_log(
@@ -632,19 +739,20 @@ def run_universal_parser(app, job_id, target_url):
                             _add_log(job_id, LogLevel.INFO, "Пробую еще раз проанализировать страницу...")
                             time.sleep(2)
                         else:
-                            _set_job_status(job_id, JobStatus.FAILED)
+                            _fail(
+                                f"Анализатор не смог создать профиль после "
+                                f"{max_attempts} попыток: {e}"
+                            )
                             return
 
             elif not profile.is_active:
                 # Профиль сломан, проверяем кулдаун (используем Python utcnow())
                 if profile.retry_not_before and profile.retry_not_before > utcnow():
-                    _add_log(
-                        job_id, LogLevel.ERROR,
+                    _fail(
                         f"Профиль {profile.domain}{profile.path_prefix} "
                         f"признан сломанным и находится на кулдауне. "
                         f"Последняя ошибка: {profile.last_error}"
                     )
-                    _set_job_status(job_id, JobStatus.FAILED)
                     return
                 else:
                     # Кулдаун прошёл — пытаемся пересканировать
@@ -662,12 +770,10 @@ def run_universal_parser(app, job_id, target_url):
                                 app, profile, job_id, "Кулдаун прошёл"
                             )
                             if not profile.is_active:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     f"Пересканирование не удалось. "
                                     f"Ошибка: {profile.last_error}"
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
                             break
                         except analyzer.AnalyzerError as e:
@@ -679,7 +785,10 @@ def run_universal_parser(app, job_id, target_url):
                                 _add_log(job_id, LogLevel.INFO, "Пробую еще раз проанализировать страницу...")
                                 time.sleep(2)
                             else:
-                                _set_job_status(job_id, JobStatus.FAILED)
+                                _fail(
+                                    f"Повторный анализ профиля не удался "
+                                    f"после {max_attempts} попыток: {e}"
+                                )
                                 return
 
             # Пере-привязываем профиль к текущей сессии: analyzer мог вернуть
@@ -688,11 +797,9 @@ def run_universal_parser(app, job_id, target_url):
                 profile = db.session.get(SiteProfile, profile.id)
             except Exception:
                 db.session.rollback()
-                _add_log(
-                    job_id, LogLevel.ERROR,
+                _fail(
                     f"Не удалось загрузить профиль #{profile.id} из БД."
                 )
-                _set_job_status(job_id, JobStatus.FAILED)
                 return
 
             _add_log(
@@ -714,17 +821,12 @@ def run_universal_parser(app, job_id, target_url):
             try:
                 instruction = json.loads(profile.instructions_json)
             except Exception as e:
-                _add_log(job_id, LogLevel.ERROR, f"Ошибка парсинга инструкции: {e}")
-                _set_job_status(job_id, JobStatus.FAILED)
+                _fail(f"Ошибка парсинга инструкции: {e}")
                 return
 
             schema_version = instruction.get("schema_version")
             if schema_version != 1:
-                _add_log(
-                    job_id, LogLevel.ERROR,
-                    f"Неподдерживаемая версия схемы: {schema_version}"
-                )
-                _set_job_status(job_id, JobStatus.FAILED)
+                _fail(f"Неподдерживаемая версия схемы: {schema_version}")
                 return
 
             # 4. Извлекаем настройки из инструкции
@@ -734,41 +836,31 @@ def run_universal_parser(app, job_id, target_url):
 
             # Валидация стратегии пагинации
             if not pagination_strategy:
-                _add_log(
-                    job_id, LogLevel.ERROR,
-                    "В инструкции отсутствует pagination.strategy."
-                )
-                _set_job_status(job_id, JobStatus.FAILED)
+                _fail("В инструкции отсутствует pagination.strategy.")
                 return
 
             if pagination_strategy not in {
                 "html_fragment_url", "none", "query_param_page",
                 "next_button", "load_more", "infinite_scroll",
             }:
-                _add_log(
-                    job_id, LogLevel.ERROR,
+                _fail(
                     f"Стратегия пагинации {pagination_strategy!r} "
                     f"не поддерживается в executor."
                 )
-                _set_job_status(job_id, JobStatus.FAILED)
                 return
 
             # Проверка обязательных параметров для DOM-стратегий
             if pagination_strategy == "next_button":
                 if not pagination_config.get("selector"):
-                    _add_log(
-                        job_id, LogLevel.ERROR,
+                    _fail(
                         "Для стратегии next_button обязателен pagination.selector."
                     )
-                    _set_job_status(job_id, JobStatus.FAILED)
                     return
             elif pagination_strategy == "load_more":
                 if not pagination_config.get("selector"):
-                    _add_log(
-                        job_id, LogLevel.ERROR,
+                    _fail(
                         "Для стратегии load_more обязателен pagination.selector."
                     )
-                    _set_job_status(job_id, JobStatus.FAILED)
                     return
 
             stop_conditions = instruction.get("stop_conditions") or {}
@@ -801,22 +893,18 @@ def run_universal_parser(app, job_id, target_url):
             with sync_playwright() as p:
                 try:
                     browser = p.chromium.connect_over_cdp(config.CDP_URL)
-                except Exception:
-                    _add_log(
-                        job_id, LogLevel.ERROR,
+                except Exception as e:
+                    _fail(
                         f"Не удалось подключиться к Chrome на {config.CDP_URL}. "
-                        f"Запусти backend/start_chrome.command."
+                        f"Запусти backend/start_chrome.command. ({e})"
                     )
-                    _set_job_status(job_id, JobStatus.FAILED)
                     return
 
                 if not browser.contexts:
-                    _add_log(
-                        job_id, LogLevel.ERROR,
+                    _fail(
                         "Chrome подключён, но вкладок нет. "
                         "Открой в нём любую страницу."
                     )
-                    _set_job_status(job_id, JobStatus.FAILED)
                     return
 
                 context = browser.contexts[0]
@@ -871,11 +959,9 @@ def run_universal_parser(app, job_id, target_url):
                                 wait_until="domcontentloaded"
                             )
                         except Exception as e:
-                            _add_log(
-                                job_id, LogLevel.ERROR,
+                            _fail(
                                 f"Не удалось загрузить страницу {page_num}: {e}"
                             )
-                            _set_job_status(job_id, JobStatus.FAILED)
                             return
 
                         time.sleep(random.uniform(2.0, 3.5))
@@ -908,12 +994,10 @@ def run_universal_parser(app, job_id, target_url):
                                     wait_until="domcontentloaded"
                                 )
                             except Exception as e:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     f"Не удалось загрузить страницу "
                                     f"{page_num}: {e}"
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             time.sleep(random.uniform(2.0, 3.5))
@@ -922,24 +1006,20 @@ def run_universal_parser(app, job_id, target_url):
                             # Поиск кнопки «следующая»
                             btn_selector = pagination_config.get("selector")
                             if not btn_selector:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     "next_button: pagination.selector "
                                     "не указан в инструкции."
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             button = None
                             try:
                                 button = page.query_selector(btn_selector)
                             except Exception as e:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     f"Невалидный CSS в next_button.selector "
                                     f"{btn_selector!r}: {e}"
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             if button is None:
@@ -984,11 +1064,9 @@ def run_universal_parser(app, job_id, target_url):
                                 except Exception:
                                     button.evaluate("el => el.click()")
                             except Exception as e:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     f"Не удалось кликнуть next_button: {e}"
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             # Некоторые сайты (например, Hacker News) при
@@ -1024,24 +1102,20 @@ def run_universal_parser(app, job_id, target_url):
                             # Поиск кнопки «показать ещё»
                             btn_selector = pagination_config.get("selector")
                             if not btn_selector:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     "load_more: pagination.selector "
                                     "не указан в инструкции."
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             button = None
                             try:
                                 button = page.query_selector(btn_selector)
                             except Exception as e:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     f"Невалидный CSS в load_more.selector "
                                     f"{btn_selector!r}: {e}"
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             if button is None:
@@ -1084,11 +1158,9 @@ def run_universal_parser(app, job_id, target_url):
                                 except Exception:
                                     button.evaluate("el => el.click()")
                             except Exception as e:
-                                _add_log(
-                                    job_id, LogLevel.ERROR,
+                                _fail(
                                     f"Не удалось кликнуть load_more: {e}"
                                 )
-                                _set_job_status(job_id, JobStatus.FAILED)
                                 return
 
                             # Если задан wait_selector — ждём его появления
@@ -1153,12 +1225,10 @@ def run_universal_parser(app, job_id, target_url):
                                 break
 
                         else:
-                            _add_log(
-                                job_id, LogLevel.ERROR,
+                            _fail(
                                 f"Неизвестная стратегия пагинации: "
                                 f"{pagination_strategy!r}."
                             )
-                            _set_job_status(job_id, JobStatus.FAILED)
                             return
 
                     # === ШАГ B: Проверка блока (captcha/cloudflare) ===
@@ -1176,7 +1246,10 @@ def run_universal_parser(app, job_id, target_url):
                             normalized.domain, block_reason,
                             instruction=instruction,
                         ):
-                            _set_job_status(job_id, JobStatus.FAILED)
+                            _fail(
+                                f"Блок ({block_reason}) на {normalized.domain} "
+                                f"не решён человеком за отведённое время."
+                            )
                             return
 
                         continue
@@ -1194,7 +1267,10 @@ def run_universal_parser(app, job_id, target_url):
                             normalized.domain, "auth_required",
                             instruction=instruction,
                         ):
-                            _set_job_status(job_id, JobStatus.FAILED)
+                            _fail(
+                                f"Требуется авторизация на {normalized.domain}, "
+                                f"но человек не выполнил её за отведённое время."
+                            )
                             return
 
                         continue
@@ -1252,21 +1328,13 @@ def run_universal_parser(app, job_id, target_url):
                                         retry_after_heal = True
                                         continue
                                     else:
-                                        _add_log(
-                                            job_id, LogLevel.ERROR,
+                                        _fail(
                                             "Самолечение не удалось: "
                                             f"{profile.last_error}"
                                         )
-                                        _set_job_status(
-                                            job_id, JobStatus.FAILED
-                                        )
                                         return
                                 except Exception as e:
-                                    _add_log(
-                                        job_id, LogLevel.ERROR,
-                                        f"Ошибка самолечения: {e}"
-                                    )
-                                    _set_job_status(job_id, JobStatus.FAILED)
+                                    _fail(f"Ошибка самолечения: {e}")
                                     return
                             else:
                                 _add_log(
@@ -1311,7 +1379,10 @@ def run_universal_parser(app, job_id, target_url):
                                         profile,
                                         f"Откат невозможен: {error_message}"
                                     )
-                                _set_job_status(job_id, JobStatus.FAILED)
+                                _fail(
+                                    "Повторный структурный сбой после "
+                                    f"самолечения: {error_message}"
+                                )
                                 return
 
                     # === ШАГ E: Извлечение карточек ===
@@ -1444,6 +1515,11 @@ def run_universal_parser(app, job_id, target_url):
                                 f"Ошибка карточки {index}/{len(cards)} "
                                 f"(итерация {page_num}): {str(e)}"
                             )
+                            notifier.notify_runtime_error(
+                                job_id,
+                                f"карточка {index}/{len(cards)}, страница {page_num}",
+                                str(e),
+                            )
                             continue
 
                     total_found = len(seen_urls)
@@ -1463,6 +1539,13 @@ def run_universal_parser(app, job_id, target_url):
                         f"{iter_label} {page_num}: всего карточек "
                         f"на странице {len(cards)}, новых {new_on_page}, "
                         f"всего уникальных {total_found}."
+                    )
+
+                    # Периодический прогресс в Telegram
+                    _send_progress_if_due(
+                        page_num,
+                        detail_pages=detail_pages_processed,
+                        new_child_profiles=new_child_profiles,
                     )
 
                     # Естественный конец: нет новых карточек
@@ -1515,6 +1598,21 @@ def run_universal_parser(app, job_id, target_url):
             )
             _set_job_status(job_id, JobStatus.COMPLETED, total_found=total_found)
 
+            struct_stats = (
+                structuring_worker.stats if structuring_worker is not None
+                else {"processed": 0, "failed": 0}
+            )
+            notifier.notify_parse_finished(
+                job_id,
+                normalized.domain if normalized else target_url,
+                status="completed",
+                saved_total=processed,
+                found_total=total_found,
+                structured=struct_stats.get("processed", 0),
+                structuring_failed=struct_stats.get("failed", 0),
+                duration_seconds=time.time() - started_at,
+            )
+
             # 7. Обновляем профиль при успехе (используем Python utcnow())
             try:
                 profile.last_success_at = utcnow()
@@ -1526,9 +1624,7 @@ def run_universal_parser(app, job_id, target_url):
 
         except Exception as e:
             db.session.rollback()
-            _add_log(job_id, LogLevel.ERROR,
-                     f"Критическая ошибка парсера: {str(e)}")
-            _set_job_status(job_id, JobStatus.FAILED)
+            _fail(f"Критическая ошибка парсера: {str(e)}")
         finally:
             for pg in (detail_page, page):
                 try:
@@ -1536,6 +1632,10 @@ def run_universal_parser(app, job_id, target_url):
                         pg.close()
                 except Exception:
                     pass
+
+            # Полная очистка вкладок, чтобы сессии не накапливали мусор
+            # (в т.ч. после жёстких завершений и human_page при капче).
+            _cleanup_browser_tabs(job_id)
 
 
 def run_f6s_parser(app, job_id, target_url):
