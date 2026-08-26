@@ -61,8 +61,20 @@ db.init_app(app)
 
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
+    """
+    Настройка SQLite под нагрузку парсера:
+    - WAL: читатели (API) не блокируют писателей (потоки парсера) и наоборот,
+      а каждая запись перестаёт требовать полный fsync (~десятки мс -> <1 мс);
+    - synchronous=NORMAL безопасен при WAL и заметно ускоряет коммиты;
+    - busy_timeout вместо мгновенного "database is locked" при конкуренции.
+    Потоки в одном процессе видят WAL через общую память, отдельные
+    процессы — через -wal/-shm файлы рядом с базой.
+    """
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
 
 
@@ -502,7 +514,9 @@ def parse():
 
 @app.route("/api/jobs", methods=["GET"])
 def get_jobs():
-    jobs = Job.query.order_by(Job.created_at.desc()).all()
+    # Лимит истории: чипам и статусам фронтенда хватает свежих задач,
+    # а полная выборка со временем деградирует каждый опрос.
+    jobs = Job.query.order_by(Job.created_at.desc()).limit(200).all()
     return jsonify([job.to_dict() for job in jobs])
 
 
@@ -513,12 +527,21 @@ def get_job_logs(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    logs = (
-        Log.query
-        .filter_by(job_id=job_id)
-        .order_by(Log.created_at.asc(), Log.id.asc())
-        .all()
-    )
+    # after_id: инкрементальная догрузка для поллинга — фронтенд присылает
+    # id последнего полученного лога и получает только новые записи.
+    # Без него (первый запрос) отдаём весь лог.
+    try:
+        after_id = int(request.args.get("after_id", 0))
+    except (TypeError, ValueError):
+        after_id = 0
+
+    query = Log.query.filter_by(job_id=job_id)
+
+    if after_id > 0:
+        query = query.filter(Log.id > after_id)
+        logs = query.order_by(Log.id.asc()).all()
+    else:
+        logs = query.order_by(Log.created_at.asc(), Log.id.asc()).all()
 
     return jsonify([log.to_dict() for log in logs])
 

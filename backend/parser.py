@@ -80,17 +80,6 @@ def _set_job_status(job_id, status, total_found=None):
         db.session.rollback()
 
 
-def _is_blocked(page):
-    try:
-        low = page.content().lower()
-    except Exception:
-        return False, ""
-    for m in BLOCK_MARKERS:
-        if m in low:
-            return True, m
-    return False, ""
-
-
 def _classify_block(page):
     """
     Классифицирует тип блока.
@@ -402,56 +391,6 @@ def _extract_child_text(detail_page, instruction):
                         sections.append(text)
             except Exception:
                 pass
-    return "\n\n".join(sections)
-
-
-def _detail_text(detail_page, url, instruction):
-    try:
-        detail_page.goto(url, timeout=45000, wait_until="domcontentloaded")
-    except Exception:
-        return ""
-    time.sleep(random.uniform(0.8, 1.6))
-
-    detail_config = instruction.get("detail") or {}
-    if not detail_config.get("enabled", False):
-        return ""
-
-    expand_btn = detail_config.get("expand_button_selector")
-    if expand_btn:
-        try:
-            toggle_btn = detail_page.query_selector(expand_btn)
-            if toggle_btn:
-                toggle_btn.click()
-                time.sleep(0.5)
-        except Exception:
-            pass
-
-    sections = []
-
-    full_text_selector = detail_config.get("full_text_selector")
-    if full_text_selector:
-        try:
-            node = detail_page.query_selector(full_text_selector)
-            if node:
-                text = (node.inner_text() or "").strip()
-                if text and len(text) > 40:
-                    sections.append(text)
-        except Exception:
-            pass
-
-    if not sections:
-        fallback_selectors = detail_config.get("fallback_selectors") or []
-        for selector in fallback_selectors:
-            try:
-                node = detail_page.query_selector(selector)
-                if node:
-                    text = (node.inner_text() or "").strip()
-                    if text and len(text) > 40:
-                        sections.append(text)
-                        break
-            except Exception:
-                continue
-
     return "\n\n".join(sections)
 
 

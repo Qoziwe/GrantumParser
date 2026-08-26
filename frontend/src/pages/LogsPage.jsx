@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { fetchJobLogs, fetchJobs } from "../api";
+import { useVisibleInterval } from "../hooks/useVisibleInterval";
 
 /**
  * LogsPage — наблюдение за задачей в реальном времени.
@@ -104,6 +105,9 @@ export default function LogsPage() {
 
   const [jobs, setJobs] = useState([]);
   const [logs, setLogs] = useState([]);
+  // id последнего полученного лога: поллинг догружает только новые записи
+  // вместо полного списка каждые 3 секунды.
+  const lastLogIdRef = useRef(0);
   const [selectedId, setSelectedId] = useState(() =>
     jobId ? Number(jobId) : null,
   );
@@ -145,42 +149,75 @@ export default function LogsPage() {
     }
   }, []);
 
-  /** Подтянуть логи выбранной задачи. */
+  /** Подтянуть логи выбранной задачи. Первый вызов — полный, далее — только новые записи. */
   const loadLogs = useCallback(async (id) => {
     if (id == null) return;
     try {
       const data = await fetchJobLogs(id);
-      setLogs(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      lastLogIdRef.current =
+        list.length > 0 ? list[list.length - 1].id : 0;
+      setLogs(list);
     } catch {
       /* следующий тик перезапросит */
     }
   }, []);
 
-  // Опрос /jobs — всегда, пока вкладка открыта.
-  useEffect(() => {
-    loadJobs();
-    const t = setInterval(loadJobs, JOBS_POLL_MS);
-    return () => clearInterval(t);
-  }, [loadJobs]);
+  /** Инкрементальный поллинг: запрашиваем только записи после последнего id. */
+  const pollLogs = useCallback(async (id) => {
+    if (id == null) return;
+    try {
+      const fresh = await fetchJobLogs(id, {
+        afterId: lastLogIdRef.current || undefined,
+      });
+      const incoming = Array.isArray(fresh) ? fresh : [];
+      if (!incoming.length) return;
+      setLogs((prev) => {
+        const seen = new Set(prev.map((l) => l.id));
+        const deduped = incoming.filter((l) => !seen.has(l.id));
+        if (!deduped.length) return prev;
+        return [...prev, ...deduped];
+      });
+      lastLogIdRef.current = Math.max(
+        lastLogIdRef.current,
+        incoming[incoming.length - 1].id,
+      );
+    } catch {
+      /* следующий тик перезапросит */
+    }
+  }, []);
+
+  // Опрос /jobs — всегда (пауза, когда вкладка скрыта).
+  useVisibleInterval(loadJobs, JOBS_POLL_MS);
 
   // Сброс окна при смене задачи (до того, как придут новые логи).
   useEffect(() => {
     setLogs([]);
+    lastLogIdRef.current = 0;
     userScrolledRef.current = false;
     setShowJump(false);
   }, [effectiveId]);
 
-  // Опрос /logs: разово сразу + интервал 3с, пока задача не завершилась.
+  // Полная загрузка логов при выборе задачи.
   useEffect(() => {
     if (effectiveId == null) return;
-
     loadLogs(effectiveId);
+  }, [effectiveId, loadLogs]);
 
-    if (isTerminal) return; // финальный подтяг без интервала
+  // Инкрементальный поллинг (только новые записи), пока задача не завершена;
+  // при скрытой вкладке интервал ставится на паузу.
+  useVisibleInterval(
+    useCallback(() => {
+      if (effectiveId != null && !isTerminal) pollLogs(effectiveId);
+    }, [effectiveId, isTerminal, pollLogs]),
+    LOGS_POLL_MS,
+  );
 
-    const t = setInterval(() => loadLogs(effectiveId), LOGS_POLL_MS);
-    return () => clearInterval(t);
-  }, [effectiveId, isTerminal, loadLogs]);
+  // Финальный инкрементальный подтяг при переходе в терминальный статус.
+  useEffect(() => {
+    if (effectiveId == null || !isTerminal) return;
+    pollLogs(effectiveId);
+  }, [effectiveId, isTerminal, pollLogs]);
 
   // Автопрокрутка вниз, если пользователь не читает историю выше.
   useEffect(() => {

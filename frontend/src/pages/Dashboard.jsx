@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { fetchJobs, startParse } from "../api";
+import { useVisibleInterval } from "../hooks/useVisibleInterval";
 
 /**
  * Dashboard — главный экран запуска парсера.
@@ -77,12 +78,8 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Первичная загрузка + автоопрос, пока вкладка открыта.
-  useEffect(() => {
-    loadJobs();
-    const timer = setInterval(loadJobs, POLL_MS);
-    return () => clearInterval(timer);
-  }, [loadJobs]);
+  // Первичная загрузка + автоопрос (пауза, когда вкладка скрыта).
+  useVisibleInterval(loadJobs, POLL_MS);
 
   // Обратный отсчёт автоперехода после запуска.
   useEffect(() => {

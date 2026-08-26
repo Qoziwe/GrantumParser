@@ -496,28 +496,3 @@ def set_job_status(job_id, status, total_found=None):
     db.session.commit()
 
     return job
-
-
-def save_parsed_item(job_id, title, url, raw_text=None):
-    """
-    Сохраняет спаршенный элемент.
-
-    Пример:
-        save_parsed_item(
-            job_id=job.id,
-            title="Startup Grant 2026",
-            url="https://www.f6s.com/some-page",
-            raw_text="Описание гранта..."
-        )
-    """
-    item = ParsedItem(
-        job_id=job_id,
-        title=title,
-        url=url,
-        raw_text=raw_text
-    )
-
-    db.session.add(item)
-    db.session.commit()
-
-    return item

@@ -118,9 +118,10 @@ export async function fetchJobs() {
   return data;
 }
 
-/** GET /jobs/:id/logs — логи одной задачи, по порядку появления. */
-export async function fetchJobLogs(jobId) {
-  const { data } = await api.get(`/jobs/${jobId}/logs`);
+/** GET /jobs/:id/logs — логи задачи. afterId: догрузить только записи новее указанного id. */
+export async function fetchJobLogs(jobId, { afterId } = {}) {
+  const params = afterId != null ? { after_id: afterId } : {};
+  const { data } = await api.get(`/jobs/${jobId}/logs`, { params });
   return data;
 }
 

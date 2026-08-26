@@ -1,91 +1,91 @@
 # Grantum Parser — Universal Edition
 
-Универсальный парсер на базе LLM для автоматического сбора и структурирования информации о грантах, акселераторах, стартап-программах и мероприятиях. 
+A universal LLM-based parser for automatically collecting and structuring information about grants, accelerators, startup programs, and events.
 
-Проект эволюционировал из узкоспециализированного скрипта в **автономный движок**, который умеет анализировать незнакомые сайты, писать для них инструкции по парсингу, обходить блокировки с помощью человека (human-in-the-loop) и асинхронно структурировать собранные данные в строгий JSON.
+The project has evolved from a narrowly specialized script into a **self-contained engine** that can analyze unfamiliar websites, write parsing instructions for them, bypass blocks with human help (human-in-the-loop), and asynchronously structure the collected data into strict JSON.
 
 ---
 
-## 🌟 Ключевые возможности
+## 🌟 Key Features
 
-1. **Автоматический анализ сайтов (Zero-shot scraping)**
-   При подаче нового URL парсер (через модуль `analyzer`) скачивает DOM, выделяет повторяющиеся блоки и отправляет их в LLM. Модель возвращает JSON-инструкцию (селекторы, стратегии пагинации), которая сохраняется как `SiteProfile`.
-2. **Два режима работы: Fast и Smart**
-   * **Fast:** Собирает только карточки с листинга (поверхностный сбор).
-   * **Smart:** Переходит внутрь каждой карточки (detail page). Если структура detail-страницы неизвестна, динамически создает `ChildProfile` через LLM и кэширует его для следующих карточек.
-3. **AI-Структурирование (Structurer)**
-   Фоновый воркер асинхронно берет "сырые" тексты собранных карточек и прогоняет их через LLM батчами. На выходе получается строгий JSON со стандартизированными полями (категория, стадия, индустрия, локация, дедлайны и т.д.).
+1. **Automatic website analysis (Zero-shot scraping)**
+   When given a new URL, the parser (via the `analyzer` module) downloads the DOM, extracts recurring blocks, and sends them to the LLM. The model returns a JSON instruction (selectors, pagination strategies), which is stored as a `SiteProfile`.
+2. **Two operating modes: Fast and Smart**
+   * **Fast:** Collects only listing cards (surface-level collection).
+   * **Smart:** Visits each card's detail page. If the detail page structure is unknown, it dynamically creates a `ChildProfile` via the LLM and caches it for subsequent cards.
+3. **AI Structuring (Structurer)**
+   A background worker asynchronously takes the raw texts of collected cards and processes them through the LLM in batches. The output is strict JSON with standardized fields (category, stage, industry, location, deadlines, etc.).
 4. **Human-in-the-loop (Telegram + noVNC)**
-   Если парсер сталкивается с капчей или окном авторизации, задача переходит в статус `WAITING_HUMAN`. В Telegram отправляется уведомление со ссылкой на виртуальный экран (noVNC). Человек решает капчу, и парсер автоматически продолжает работу.
-5. **Пул LLM-ключей (Key Rotation)**
-   Встроенный менеджер API-ключей автоматически балансирует нагрузку, обходит минутные (RPM/TPM) и дневные лимиты провайдера, а также временно блокирует ключи при ошибках 429/401.
-6. **Встроенная безопасность (Auth)**
-   Доступ к API и фронтенду защищен паролем. Реализованы сессии (HttpOnly куки), защита от брутфорса, CSRF-токены и rate-лимиты.
+   If the parser encounters a captcha or login screen, the job transitions to the `WAITING_HUMAN` status. A notification with a link to the virtual screen (noVNC) is sent to Telegram. Once the human solves the captcha, the parser automatically continues.
+5. **LLM Key Pool (Key Rotation)**
+   The built-in API key manager automatically balances load, works around provider per-minute (RPM/TPM) and daily limits, and temporarily blocks keys on 429/401 errors.
+6. **Built-in Security (Auth)**
+   Access to the API and frontend is password-protected. Includes sessions (HttpOnly cookies), brute-force protection, CSRF tokens, and rate limiting.
 
 ---
 
-## 🏗 Архитектура проекта
+## 🏗 Project Architecture
 
-Проект разделен на две основные части, общающиеся по REST API. Браузер вынесен в отдельный изолированный процесс, к которому бекенд подключается по протоколу CDP (Chrome DevTools Protocol).
+The project is split into two main parts communicating over a REST API. The browser runs as a separate isolated process that the backend connects to via CDP (Chrome DevTools Protocol).
 
 ```text
 [ Frontend (React/Vite) ] <--- REST API ---> [ Backend (Flask/SQLite) ]
                                                       |
                                                 (CDP :9222)
                                                       v
-[ Telegram (Уведомления) ] <--- [ Xvfb (Виртуальный дисплей) + Chromium ]
+[ Telegram (Notifications) ] <--- [ Xvfb (Virtual display) + Chromium ]
                                                       |
-[ noVNC (Удаленный доступ)] <-------------------------+
+[ noVNC (Remote access)] <----------------------------+
 ```
 
 ---
 
-## 📂 Структура Backend
+## 📂 Backend Structure
 
-Бекенд написан на Python (Flask + SQLAlchemy) и использует Playwright для управления браузером.
+The backend is written in Python (Flask + SQLAlchemy) and uses Playwright to control the browser.
 
-### База данных (SQLite / `models.py`)
-- **SiteProfile**: Инструкция для парсинга листинга (домен, префикс пути, JSON-схема, статус активности).
-- **ChildProfile**: Инструкция для detail-страниц, привязанная к родительскому `SiteProfile`.
-- **Job**: Задача парсинга (URL, статус, лимиты, режим, время).
-- **ParsedItem**: Результат парсинга. Хранит сырой текст (`raw_text`) и структурированный JSON (`structured_data`), а также статус структурирования.
-- **Log**: Логи выполнения задачи для отображения в реальном времени на фронтенде.
+### Database (SQLite / `models.py`)
+- **SiteProfile**: Parsing instruction for listings (domain, path prefix, JSON schema, active status).
+- **ChildProfile**: Instruction for detail pages, linked to a parent `SiteProfile`.
+- **Job**: A parsing task (URL, status, limits, mode, timestamps).
+- **ParsedItem**: Parsing result. Stores raw text (`raw_text`) and structured JSON (`structured_data`), plus structuring status.
+- **Log**: Job execution logs displayed in real time on the frontend.
 
-### Основные модули
-- `app.py`: Инициализация Flask, настройка CORS, конфигурация куки (SameSite, Secure) и регистрация REST API эндпоинтов.
-- `parser.py`: Ядро исполнения. Подключается к Chromium, выполняет навигацию, применяет инструкции из `SiteProfile`/`ChildProfile`, обрабатывает пагинацию и отлавливает капчи.
-- `analyzer.py`: Модуль первичного анализа. Очищает DOM от мусора (`script`, `style`), применяет эвристику для поиска карточек и просит LLM сгенерировать JSON-инструкцию.
-- `structurer.py`: Фоновый поток `StructuringWorker`. Берет `ParsedItem` со статусом `pending`, батчами отправляет их в LLM для приведения к единому стандарту и сохраняет результат.
-- `llm_client.py` & `llm_key_pool.py`: Клиент для OpenAI-совместимых API с поддержкой ротации пула ключей, отслеживанием токенов и обработкой Rate Limits.
-- `auth.py`: Модуль безопасности. Защита от брутфорса, управление сессиями (HttpOnly Cookies) и CSRF-токенами.
-- `notifier.py`: Интеграция с Telegram. Агрегирует уведомления о блокировках и отправляет ссылку на виртуальный экран.
-
----
-
-## 💻 Структура Frontend
-
-Фронтенд — это Single Page Application (SPA) на React и Vite.
-- **`src/api.js`**: Единый Axios-клиент. Автоматически перехватывает 401 ошибки и подставляет CSRF-токены. Берет базовый URL из переменной `VITE_API_URL`.
-- **`src/pages/Dashboard.jsx`**: Запуск парсера, настройка лимитов, выбор режима (Fast/Smart).
-- **`src/pages/Catalog.jsx`**: Мощный клиентский фильтр и поиск по всем собранным и структурированным карточкам (поиск по индустриям, локациям, дедлайнам).
-- **`src/pages/Profiles.jsx`**: Управление созданными AI профилями сайтов (просмотр, удаление, принудительный рескан).
-- **`src/pages/LogsPage.jsx`**: Просмотр логов парсера в реальном времени (polling). Если задача ждет человека — выводит баннер.
+### Core Modules
+- `app.py`: Flask initialization, CORS setup, cookie configuration (SameSite, Secure), and REST API endpoint registration.
+- `parser.py`: Execution core. Connects to Chromium, performs navigation, applies instructions from `SiteProfile`/`ChildProfile`, handles pagination, and detects captchas.
+- `analyzer.py`: Primary analysis module. Cleans junk out of the DOM (`script`, `style`), applies heuristics to find cards, and asks the LLM to generate a JSON instruction.
+- `structurer.py`: Background thread `StructuringWorker`. Takes `ParsedItem`s with pending status, sends them to the LLM in batches for standardization, and saves the results.
+- `llm_client.py` & `llm_key_pool.py`: Client for OpenAI-compatible APIs with key pool rotation, token tracking, and rate limit handling.
+- `auth.py`: Security module. Brute-force protection, session management (HttpOnly cookies), and CSRF tokens.
+- `notifier.py`: Telegram integration. Aggregates block notifications and sends the virtual screen link.
 
 ---
 
-## 🚀 Развертывание на сервере (Ubuntu / Debian)
+## 💻 Frontend Structure
 
-Данная инструкция описывает установку на стандартный Linux-сервер (VPS). Для реализации "виртуального экрана" (чтобы решать капчи прямо в браузере сервера по ссылке) мы используем связку Xvfb + x11vnc + noVNC.
+The frontend is a Single Page Application (SPA) built with React and Vite.
+- **`src/api.js`**: Unified Axios client. Automatically intercepts 401 errors and injects CSRF tokens. Takes the base URL from the `VITE_API_URL` variable.
+- **`src/pages/Dashboard.jsx`**: Launching the parser, configuring limits, choosing the mode (Fast/Smart).
+- **`src/pages/Catalog.jsx`**: Powerful client-side filtering and search across all collected and structured cards (search by industries, locations, deadlines).
+- **`src/pages/Profiles.jsx`**: Managing AI-created site profiles (viewing, deleting, forced rescan).
+- **`src/pages/LogsPage.jsx`**: Real-time parser log viewer (polling). Shows a banner when a job is waiting for human input.
 
-### 1. Подготовка системы и установка зависимостей
+---
+
+## 🚀 Server Deployment (Ubuntu / Debian)
+
+This guide covers installation on a standard Linux server (VPS). To implement the "virtual screen" (so captchas can be solved right in the server's browser via a link), we use the Xvfb + x11vnc + noVNC stack.
+
+### 1. System preparation and dependency installation
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y python3 python3-venv python3-pip git curl nginx
 sudo apt install -y chromium-browser xvfb x11vnc novnc websockify
 ```
-*(Примечание: на Ubuntu `chromium-browser` может ставиться через snap. Для серверов предпочтительнее использовать чистый Debian, где Chromium ставится через apt).*
+*(Note: on Ubuntu, `chromium-browser` may be installed via snap. For servers, plain Debian is preferable, where Chromium installs through apt).*
 
-### 2. Клонирование и настройка Backend
+### 2. Cloning and setting up the Backend
 ```bash
 git clone https://github.com/YOUR_USER/GrantumParser.git /opt/GrantumParser
 cd /opt/GrantumParser/backend
@@ -95,12 +95,12 @@ source venv/bin/activate
 pip install -r requirements.txt gunicorn
 ```
 
-Создайте конфигурационный файл `.env`:
+Create the `.env` configuration file:
 ```bash
 cp .env.example .env
 nano .env
 ```
-Обязательные параметры:
+Required parameters:
 ```env
 SERVER_LOCATION=vps
 CDP_URL=http://127.0.0.1:9222
@@ -112,26 +112,26 @@ TELEGRAM_CHAT_ID=...
 CORS_ORIGINS=https://your-frontend-domain.com
 ```
 
-### 3. Настройка виртуального экрана (Browser + noVNC)
-Задайте пароль для VNC, чтобы никто посторонний не мог управлять браузером:
+### 3. Setting up the virtual screen (Browser + noVNC)
+Set a VNC password so no one else can control the browser:
 ```bash
 x11vnc -storepasswd YOUR_VNC_PASSWORD /etc/x11vnc.pass
 ```
 
-Создайте скрипт запуска браузера `/opt/start-browser.sh`:
+Create the browser launch script `/opt/start-browser.sh`:
 ```bash
 #!/bin/bash
 export DISPLAY=:99
-# Очистка старых процессов
+# Clean up old processes
 pkill -f "Xvfb :99" ; pkill -f "remote-debugging-port=9222"
 pkill x11vnc ; pkill websockify
 sleep 2
 
-# Виртуальный экран
+# Virtual display
 Xvfb :99 -screen 0 1280x800x24 &
 sleep 1
 
-# Запуск Chromium с открытым портом отладки (CDP)
+# Launch Chromium with an open debug port (CDP)
 chromium \
   --no-sandbox \
   --disable-gpu \
@@ -145,16 +145,16 @@ chromium \
 
 sleep 4
 
-# VNC сервер с паролем
+# Password-protected VNC server
 x11vnc -display :99 -forever -rfbauth /etc/x11vnc.pass -quiet -rfbport 5900 &
-# Web-клиент noVNC
+# noVNC web client
 exec websockify --web=/usr/share/novnc/ 6080 localhost:5900
 ```
-Сделайте скрипт исполняемым: `chmod +x /opt/start-browser.sh`
+Make the script executable: `chmod +x /opt/start-browser.sh`
 
-### 4. Создание Systemd сервисов
+### 4. Creating Systemd services
 
-Создайте сервис для браузера `/etc/systemd/system/grantum-browser.service`:
+Create a service for the browser `/etc/systemd/system/grantum-browser.service`:
 ```ini
 [Unit]
 Description=Grantum Virtual Browser and noVNC
@@ -169,7 +169,7 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-Создайте сервис для бекенда `/etc/systemd/system/grantum-backend.service`:
+Create a service for the backend `/etc/systemd/system/grantum-backend.service`:
 ```ini
 [Unit]
 Description=Grantum Parser Backend (Gunicorn)
@@ -179,7 +179,7 @@ After=network.target
 User=root
 WorkingDirectory=/opt/GrantumParser/backend
 Environment="PATH=/opt/GrantumParser/backend/venv/bin"
-# Важно: 1 worker обязателен для корректной работы пула ключей в памяти!
+# Important: exactly 1 worker is required for the in-memory key pool to work correctly!
 ExecStart=/opt/GrantumParser/backend/venv/bin/gunicorn --workers 1 --threads 8 --worker-class gthread --bind 127.0.0.1:5000 app:app
 Restart=always
 
@@ -187,31 +187,31 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-Запустите сервисы:
+Start the services:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now grantum-browser grantum-backend
 ```
 
-### 5. Настройка Nginx (Реверс-прокси)
-Настройте Nginx для проксирования запросов к бекенду и noVNC. 
+### 5. Nginx configuration (Reverse proxy)
+Configure Nginx to proxy requests to the backend and noVNC.
 - API: `api.yourdomain.com` -> `http://127.0.0.1:5000`
-- Browser: `browser.yourdomain.com` -> `http://127.0.0.1:6080` (с поддержкой WebSockets).
+- Browser: `browser.yourdomain.com` -> `http://127.0.0.1:6080` (with WebSocket support).
 
-*Альтернативно: можно использовать Cloudflare Tunnel (cloudflared), добавив Public Hostnames для портов `5000` и `6080`.*
+*Alternatively: you can use Cloudflare Tunnel (cloudflared) by adding Public Hostnames for ports `5000` and `6080`.*
 
-### 6. Сборка и деплой Frontend
-Перейдите в папку `frontend` на локальной машине или сервере.
-Задайте URL вашего API:
+### 6. Building and deploying the Frontend
+Go to the `frontend` folder on your local machine or server.
+Set your API URL:
 ```bash
 VITE_API_URL=https://api.yourdomain.com/api npm run build
 ```
-Содержимое папки `dist` можно разместить на GitHub Pages, Vercel, Netlify или отдать через тот же Nginx.
+The contents of the `dist` folder can be hosted on GitHub Pages, Vercel, Netlify, or served through the same Nginx.
 
 ---
 
-## 🛠 Разработка и локальный запуск
+## 🛠 Development and Local Setup
 
-1. Запустите Chrome с открытым портом отладки (в терминале или через скрипт `backend/start_chrome.command`).
-2. Запустите бекенд: `cd backend && python app.py` (потребуется `.env` файл).
-3. Запустите фронтенд: `cd frontend && npm run dev`.
+1. Start Chrome with an open debug port (via terminal or the `backend/start_chrome.command` script).
+2. Start the backend: `cd backend && python app.py` (requires a `.env` file).
+3. Start the frontend: `cd frontend && npm run dev`.
